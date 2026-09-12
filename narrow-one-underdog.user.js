@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         One Kill = One Stat Point
 // @namespace    narrowone One Kill = One Stat Point
-// @version      2.7.0
+// @version      2.8.0
 // @description  Keep your gear, lose your stats. Earn them back with kills, up to the caps your own gear set gives you.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -259,22 +259,34 @@
     PAGE.__narrowOneUnderdog = true;
 
     var STORE_KEY = 'narrowone.underdog.v2';
-    var VERSION = '2.7.0';
+    var VERSION = '2.8.0';
 
     /* ---- the game's stat table, lifted from the bundle ---- */
+    // Grouped the same way the game itself groups them - each stat's own
+    // tooltipCategories in the bundle say "armor", "bow", "arrow" or "melee".
+    // Arrow is folded into Bow here, since arrows aren't a build of their own.
+    // Bloodlust is tagged with all four - it isn't tied to one weapon type -
+    // so it gets its own group rather than an arbitrary pick of the four.
+    var GROUPS = {
+      armor:  'Armour',
+      bow:    'Bow',
+      melee:  'Melee',
+      shared: 'Shared'
+    };
+
     var STATS = [
-      { key: 'armorStrength',       name: 'Damage Protection', max: 20 },
-      { key: 'movementSpeed',       name: 'Movement Speed',    max: 20 },
-      { key: 'healthRegenSpeed',    name: 'Health Regen Speed',max: 20 },
-      { key: 'shootingFocus',       name: 'Focus',             max: 10 },
-      { key: 'bowAttackStrength',   name: 'Attack Strength',   max: 10 },
-      { key: 'arrowLoadingSpeed',   name: 'Loading Speed',     max: 5  },
-      { key: 'arrowFlySpeed',       name: 'Travel Speed',      max: 5  },
-      { key: 'arrowEnemyStun',      name: 'Stun Enemy',        max: 5  },
-      { key: 'meleeAttackStrength', name: 'Strength',          max: 5  },
-      { key: 'meleeAttackSpeed',    name: 'Speed',             max: 5  },
-      { key: 'meleeAttackReach',    name: 'Reach',             max: 5  },
-      { key: 'bloodlust',           name: 'Bloodlust',         max: 11 }
+      { key: 'armorStrength',       name: 'Damage Protection', max: 20, group: 'armor'  },
+      { key: 'movementSpeed',       name: 'Movement Speed',    max: 20, group: 'armor'  },
+      { key: 'healthRegenSpeed',    name: 'Health Regen Speed',max: 20, group: 'armor'  },
+      { key: 'shootingFocus',       name: 'Focus',             max: 10, group: 'bow'    },
+      { key: 'bowAttackStrength',   name: 'Attack Strength',   max: 10, group: 'bow'    },
+      { key: 'arrowLoadingSpeed',   name: 'Loading Speed',     max: 5,  group: 'bow'    },
+      { key: 'arrowFlySpeed',       name: 'Travel Speed',      max: 5,  group: 'bow'    },
+      { key: 'arrowEnemyStun',      name: 'Stun Enemy',        max: 5,  group: 'bow'    },
+      { key: 'meleeAttackStrength', name: 'Strength',          max: 5,  group: 'melee'  },
+      { key: 'meleeAttackSpeed',    name: 'Speed',             max: 5,  group: 'melee'  },
+      { key: 'meleeAttackReach',    name: 'Reach',             max: 5,  group: 'melee'  },
+      { key: 'bloodlust',           name: 'Bloodlust',         max: 11, group: 'shared' }
     ];
 
     var DEFAULTS = { killsPerPoint: 1, autoOpen: false, rateOne: false, quiet: false };
@@ -911,6 +923,8 @@
       '#nud-dialog .nud-sub { opacity:.4; font-size:11px; margin:-4px 0 8px; word-break:break-all; }',
       '#nud-dialog .nud-cand-stats { min-width:0; flex:1 1 auto; text-align:right; font-size:12px; }',
       '#nud-dialog .nud-picked { outline:2px solid rgba(0,0,0,.35); border-radius:6px; }',
+      '#nud-dialog .nud-group { opacity:.55; font-size:12px; text-transform:uppercase; letter-spacing:.04em; margin:10px 0 2px; }',
+      '#nud-dialog .nud-group:first-of-type { margin-top:2px; }',
       /* the name is long for a menu button - let it wrap under the icon */
       '#nud-menu-button .main-menu-button-text { font-size:11px; line-height:1.1; white-space:normal; max-width:96px; text-align:center; }'
     ].join('\n');
@@ -1249,34 +1263,45 @@
         inner.appendChild(note('Capped at what your own gear set gives. Your gear and weapons are untouched.'));
 
         var any = false;
-        STATS.forEach(function (s) {
-          var cap = caps[s.key] || 0;
-          if (!cap) return;                       // your set does not give this
+        // Bow, Armour, Melee, then Bloodlust last - it isn't tied to a
+        // weapon type, so it doesn't belong ahead of the ones that are.
+        ['bow', 'armor', 'melee', 'shared'].forEach(function (groupKey) {
+          var inGroup = STATS.filter(function (s) { return s.group === groupKey && (caps[s.key] || 0); });
+          if (!inGroup.length) return;
           any = true;
-          var have = chosen[s.key] || 0;
-          var maxed = have >= cap;
 
-          var r = document.createElement('div');
-          r.className = 'settings-item nud-row' + (maxed ? ' nud-maxed' : '');
+          var gh = document.createElement('div');
+          gh.className = 'nud-group';
+          gh.textContent = GROUPS[groupKey];
+          inner.appendChild(gh);
 
-          var n = document.createElement('div');
-          n.className = 'nud-name';
-          n.textContent = s.name;
-          r.appendChild(n);
+          inGroup.forEach(function (s) {
+            var cap = caps[s.key] || 0;
+            var have = chosen[s.key] || 0;
+            var maxed = have >= cap;
 
-          var v = document.createElement('div');
-          v.className = 'nud-val';
-          v.textContent = have + ' / ' + cap;
-          r.appendChild(v);
+            var r = document.createElement('div');
+            r.className = 'settings-item nud-row' + (maxed ? ' nud-maxed' : '');
 
-          var b;
-          if (maxed) b = button('Maxed', null, true);
-          else if (pointsLeft() < 1) b = button('Need 1', null, true);
-          else b = button('Upgrade', function () { upgrade(s); });
-          b.className += ' nud-btn';
-          r.appendChild(b);
+            var n = document.createElement('div');
+            n.className = 'nud-name';
+            n.textContent = s.name;
+            r.appendChild(n);
 
-          inner.appendChild(r);
+            var v = document.createElement('div');
+            v.className = 'nud-val';
+            v.textContent = have + ' / ' + cap;
+            r.appendChild(v);
+
+            var b;
+            if (maxed) b = button('Maxed', null, true);
+            else if (pointsLeft() < 1) b = button('Need 1', null, true);
+            else b = button('Upgrade', function () { upgrade(s); });
+            b.className += ' nud-btn';
+            r.appendChild(b);
+
+            inner.appendChild(r);
+          });
         });
 
         if (!any) inner.appendChild(note('Your gear set provides no stats at all.'));
