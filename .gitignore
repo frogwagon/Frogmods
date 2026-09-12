@@ -1,0 +1,11 @@
+# Extracted game source, kept locally for reference while patching the
+# bundle - it's Pelican Party's code, not ours to publish.
+research/
+
+# Scratch test harnesses, not part of any mod.
+st.html
+*.scratch.*
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
