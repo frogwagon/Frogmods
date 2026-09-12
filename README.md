@@ -1,4 +1,6 @@
-# Narrow One Mods
+# Frogmods
+
+My mods for Narrow One, made for my videos.
 
 Tampermonkey userscripts for [Narrow One](https://narrow.one/), a browser archery
 game. Each one adds a native-looking tab or button to the game's own menu -
