@@ -6,6 +6,9 @@ research/
 st.html
 *.scratch.*
 
+# Work in progress - not ready to publish yet.
+narrow-one-target-practice.user.js
+
 # OS / editor noise
 .DS_Store
 Thumbs.db
