@@ -53,7 +53,24 @@ configurable from its own menu tab - colors, opacity, and thresholds.
 - **Insert** opens/closes its settings.
 - See [docs/health-number.md](docs/health-number.md) for the full write-up.
 
-## Install (all three)
+### [Target Practice](narrow-one-target-practice.user.js)
+
+A self-contained aim trainer, built right into the game's own menu. Press and
+hold to draw, release to fire - same shape as the bow - at circular targets on
+a full-screen range. Static mode gives you one target at a time on a timer;
+Moving mode keeps a single target drifting and bouncing the whole session.
+
+Doesn't touch a real match in any way - no reading or writing game state, no
+bundle patch needed. It's just a canvas on top of the page, driven by your own
+mouse, with your accuracy, hits, best streak, and average reaction time
+tracked locally so you can watch yourself improve.
+
+- A **Target Practice** button appears in the main menu.
+- Settings: mode, target size, session length, and target speed or
+  reaction window depending on the mode.
+- Personal bests and recent sessions are shown right in the menu.
+
+## Install (all four)
 
 1. Install **[Tampermonkey](https://www.tampermonkey.net/)** (Chrome, Edge,
    Firefox, Opera).
@@ -62,7 +79,7 @@ configurable from its own menu tab - colors, opacity, and thresholds.
 2. Open the Tampermonkey dashboard → **+** (Create a new script).
 3. Delete the template, paste in the whole contents of the `.user.js` file you
    want, and save (Ctrl+S).
-4. Repeat for any of the other two.
+4. Repeat for any of the others.
 5. Open <https://narrow.one/> and join a match.
 
 ## Notes
