@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Hotkey Editor
 // @namespace    narrowone-hotkeys
-// @version      2.0.0
-// @description  Rebind the game's own controls - movement, shoot, jump, weapon switch, everything - plus the toggle keys of whichever other Narrow One mods you have installed. Adds a Hotkeys tab to the main menu.
+// @version      2.1.0
+// @description  Rebind the game's own controls, plus menu shortcuts like Shop and Settings that never had a key at all, plus the toggle keys of whichever other Narrow One mods you have installed. Adds a Hotkeys tab to the main menu.
 // @author       Frogwagon
 // @match        https://narrow.one/*
 // @run-at       document-start
@@ -201,6 +201,33 @@
     var CTRL_KEY = 'narrowone.hotkeys.controls.v1';  // game-control overrides
 
     /** Every mod that might have registered itself on the page. */
+    /**
+     * Two different kinds of action share this one list:
+     *
+     *  - a mod toggle (no `run`) - this only writes a key into shared
+     *    storage. The mod itself already has its own listener that reads
+     *    that key and opens its own dialog; Hotkey Editor never touches it.
+     *
+     *  - a menu shortcut (has `run`) - there's no mod on the other end, so
+     *    Hotkey Editor's own listener below fires `run` directly. These are
+     *    native menu buttons - Shop, Settings, Maps, Squad, full screen,
+     *    exiting the round - that the game itself never gave a key at all,
+     *    found and clicked the same way this mod places its own button:
+     *    match `.main-menu-button-container` by its text, click the button
+     *    inside it. Log in / Install / Update / Quit aren't here on purpose -
+     *    one-off or destructive, not something worth a stray keypress.
+     */
+    function clickMenuButton(labels) {
+      var bar = document.querySelector('.menu-buttons-container');
+      if (!bar) return false;
+      var sibs = Array.prototype.slice.call(bar.querySelectorAll('.main-menu-button-container'));
+      var hit = sibs.find(function (x) { return labels.indexOf((x.textContent || '').trim()) !== -1; });
+      var btn = hit && hit.querySelector('button');
+      if (!btn) return false;
+      btn.click();
+      return true;
+    }
+
     var MOD_ACTIONS = [
       { id: 'underdog.toggle', mod: '1 Kill = 1 Stat Point', label: 'Open the stat-point manager', def: 'KeyF',
         present: function () { return !!PAGE.NarrowUnderdog; } },
@@ -209,7 +236,21 @@
       { id: 'crosshair.toggle', mod: 'Crosshair Customizer', label: 'Open Crosshair settings', def: null,
         present: function () { return !!PAGE.NarrowCrosshair; } },
       { id: 'targetpractice.toggle', mod: 'Target Practice', label: 'Open Target Practice', def: null,
-        present: function () { return !!PAGE.NarrowTargetPractice; } }
+        present: function () { return !!PAGE.NarrowTargetPractice; } },
+
+      { id: 'menu.shop', mod: 'Game Menu', label: 'Open Shop', def: null,
+        present: function () { return true; }, run: function () { clickMenuButton(['Shop']); } },
+      { id: 'menu.settings', mod: 'Game Menu', label: 'Open Settings', def: null,
+        present: function () { return true; }, run: function () { clickMenuButton(['Settings']); } },
+      { id: 'menu.maps', mod: 'Game Menu', label: 'Open Maps', def: null,
+        present: function () { return true; }, run: function () { clickMenuButton(['Maps']); } },
+      { id: 'menu.squad', mod: 'Game Menu', label: 'Open Squad', def: null,
+        present: function () { return true; }, run: function () { clickMenuButton(['Squad']); } },
+      { id: 'menu.fullscreen', mod: 'Game Menu', label: 'Toggle Full Screen', def: null,
+        present: function () { return true; },
+        run: function () { clickMenuButton(['Full Screen', 'Exit Full Screen']); } },
+      { id: 'menu.exitRound', mod: 'Game Menu', label: 'Exit Round', def: null,
+        present: function () { return true; }, run: function () { clickMenuButton(['Exit Round']); } }
     ];
 
     /** Friendly names and, where known, the game's own out-of-the-box binding. */
@@ -419,8 +460,9 @@
         e.preventDefault();
         e.stopPropagation();
         if (e.code === 'Escape') { finish(); return; }
-        // Pure modifier taps don't count as a key - keep waiting.
-        if (/^(Shift|Control|Alt|Meta)(Left|Right)?$/.test(e.code)) return;
+        // Shift alone is a real binding here - the game's own default for
+        // Fly Down is ShiftLeft - so modifier taps are accepted like any
+        // other key, not treated as a wait-for-something-else combo.
         if (RESERVED[e.code]) {
           input.value = keyLabel(e.code) + ' is ' + RESERVED[e.code] + ' - pick another';
           return;
@@ -452,9 +494,19 @@
 
     function modConflictsFor(action, code) {
       if (code === null) return [];
-      return MOD_ACTIONS.filter(function (a) {
+      var labels = MOD_ACTIONS.filter(function (a) {
         return a.present() && a.id !== action.id && effectiveModKey(a) === code;
-      });
+      }).map(function (a) { return a.label; });
+
+      // Also flag a clash against a real game control, so "Open Shop" bound
+      // to the same key as "Switch Weapon" doesn't come as a surprise.
+      var input = findInput();
+      if (input) {
+        input.keys.forEach(function (b, id) {
+          if ((b.keyCodes || []).indexOf(code) !== -1) labels.push(labelFor(id));
+        });
+      }
+      return labels;
     }
 
     function modActionRow(action) {
@@ -507,16 +559,24 @@
 
     function controlConflictsFor(actionId, b) {
       if (!b) return [];
+      var labels = [];
       var input = findInput();
-      if (!input) return [];
-      var mine = [];
-      input.keys.forEach(function (other, otherId) {
-        if (otherId === actionId) return;
-        var shared = (b.keyCodes || []).some(function (c) { return (other.keyCodes || []).includes(c); }) ||
-          (b.mouseButtons || []).some(function (m) { return (other.mouseButtons || []).includes(m); });
-        if (shared) mine.push(labelFor(otherId));
+      if (input) {
+        input.keys.forEach(function (other, otherId) {
+          if (otherId === actionId) return;
+          var shared = (b.keyCodes || []).some(function (c) { return (other.keyCodes || []).includes(c); }) ||
+            (b.mouseButtons || []).some(function (m) { return (other.mouseButtons || []).includes(m); });
+          if (shared) labels.push(labelFor(otherId));
+        });
+      }
+      // The reverse of modConflictsFor's own game-control check, so a clash
+      // shows up on whichever row you happen to be looking at.
+      (b.keyCodes || []).forEach(function (code) {
+        MOD_ACTIONS.forEach(function (a) {
+          if (a.present() && effectiveModKey(a) === code) labels.push(a.label);
+        });
       });
-      return mine;
+      return labels;
     }
 
     function controlActionRow(actionId, binding) {
@@ -634,10 +694,12 @@
         });
       }
 
-      var installed = MOD_ACTIONS.filter(function (a) { return a.present(); });
-      if (installed.length) {
-        inner.appendChild(h3('Mod Hotkeys'));
-        installed.forEach(function (a) { inner.appendChild(modActionRow(a)); });
+      var available = MOD_ACTIONS.filter(function (a) { return a.present(); });
+      if (available.length) {
+        inner.appendChild(h3('Other Hotkeys'));
+        inner.appendChild(note('Menu shortcuts (Shop, Settings, Maps, ...) are unbound until you ' +
+          'assign a key - none of these had a default before.'));
+        available.forEach(function (a) { inner.appendChild(modActionRow(a)); });
       }
 
       var resetAllRow = document.createElement('div');
@@ -759,6 +821,30 @@
       if (dialogEl && dialogEl.isConnected) {
         e.preventDefault(); e.stopPropagation(); closeDialog();
       }
+    }, true);
+
+    /** Skip a shortcut while you're typing somewhere - chat included. */
+    function typingElsewhere(e) {
+      var t = e.target;
+      if (!t || !t.tagName) return false;
+      var tag = t.tagName.toLowerCase();
+      return tag === 'input' || tag === 'textarea' || t.isContentEditable;
+    }
+
+    // Fires the menu-shortcut actions (Shop, Settings, Maps, ...) - the
+    // mod-toggle actions need nothing here, each of those mods already
+    // listens for its own key.
+    window.addEventListener('keydown', function (e) {
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      if (typingElsewhere(e)) return;
+      MOD_ACTIONS.forEach(function (a) {
+        if (!a.run || !a.present()) return;
+        var key = effectiveModKey(a);
+        if (key !== null && e.code === key) {
+          e.preventDefault(); e.stopPropagation();
+          a.run();
+        }
+      });
     }, true);
 
     PAGE.NarrowHotkeys = window.NarrowHotkeys = {

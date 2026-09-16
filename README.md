@@ -69,12 +69,16 @@ have both installed, whichever loads first does the actual patch.
 The mod-hotkey list only shows mods you actually have installed - nothing
 appears for one you don't have, and nothing breaks if you're missing one.
 
+Also covers menu buttons the game never gave a key at all - Shop, Settings,
+Maps, Squad, Full Screen, Exit Round - all unbound until you assign one.
+
 - A **Hotkeys** button appears in the main menu.
 - Game controls: rebind anything, right down to which mouse button fires
-  your bow.
-- Mod hotkeys: covers **1 Kill = 1 Stat Point** (default F) and **Health
-  Number** (default Insert) when installed. Crosshair Customizer has no
-  default key - assign one here if you want one.
+  your bow, or a bare Shift/Ctrl/Alt press if you want it.
+- Other hotkeys: **1 Kill = 1 Stat Point** (default F) and **Health Number**
+  (default Insert) when installed, plus Shop/Settings/Maps/Squad/Full
+  Screen/Exit Round - none of those have a default, so nothing changes
+  until you set one.
 
 ## Install (all four)
 
