@@ -55,19 +55,26 @@ configurable from its own menu tab - colors, opacity, and thresholds.
 
 ### [Hotkey Editor](narrow-one-hotkeys.user.js)
 
-Rebind the keys the other mods use to open their menus, or turn any of them
-off. Click a key to rebind it, Escape cancels a rebind in progress, and it
-warns you if two actions end up sharing the same key.
+Rebind the game's own controls - move, shoot, jump, switch weapon, third
+person, chat, scoreboard, everything - plus the toggle keys of whichever
+other mods you have installed. Click a key to rebind it (a mouse button
+works too, since Shoot is normally a click), Escape cancels a rebind in
+progress, and it warns you if two actions end up sharing the same key.
 
-Each mod checks a shared spot in local storage for its own key rather than
-trusting a message from another script, so this works no matter what order
-Tampermonkey happens to run them in, and needs no changes if you're missing
-one of the other mods - its row just does nothing.
+The game control list is read live from the game's own input system, not
+typed out by hand, so it can't go stale. Reaching it needs the same one-off
+cache patch as 1 Kill = 1 Stat Point (see that mod's section above) - safe to
+have both installed, whichever loads first does the actual patch.
+
+The mod-hotkey list only shows mods you actually have installed - nothing
+appears for one you don't have, and nothing breaks if you're missing one.
 
 - A **Hotkeys** button appears in the main menu.
-- Covers **1 Kill = 1 Stat Point** (default F) and **Health Number** (default
-  Insert). Crosshair Customizer has no default key - assign one here if you
-  want one.
+- Game controls: rebind anything, right down to which mouse button fires
+  your bow.
+- Mod hotkeys: covers **1 Kill = 1 Stat Point** (default F) and **Health
+  Number** (default Insert) when installed. Crosshair Customizer has no
+  default key - assign one here if you want one.
 
 ## Install (all four)
 
