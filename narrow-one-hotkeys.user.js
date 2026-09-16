@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hotkey Editor
 // @namespace    narrowone-hotkeys
-// @version      2.1.0
+// @version      2.1.1
 // @description  Rebind the game's own controls, plus menu shortcuts like Shop and Settings that never had a key at all, plus the toggle keys of whichever other Narrow One mods you have installed. Adds a Hotkeys tab to the main menu.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -341,7 +341,28 @@
         binding.mouseButtons = (saved.mouseButtons || []).slice();
       });
     }
-    setInterval(applyControlOverrides, 500);
+    setInterval(applyControlOverrides, 200);   // cheap safety net between the events above
+
+    /**
+     * The poll above only catches a reset up to half a second late - fine
+     * normally, but "my rebind stopped working" is really "it stopped
+     * working and stayed that way", which a poll alone doesn't explain.
+     *
+     * Every one of this mod's own dialogs calls exitPointerLock() on open,
+     * and closing one (or opening the game's own pause menu) is exactly the
+     * moment pointer lock is re-requested - the same moment a rebind would
+     * need reapplying if something along the way reset it. So this also
+     * reapplies immediately on the events that actually mark that moment,
+     * rather than waiting on the timer to catch up: pointer lock changing
+     * either way, the tab regaining focus (alt-tab and back), and this
+     * mod's own dialog closing - which happens to be the exact "open the
+     * menu and close it" workaround, now automatic instead of manual.
+     */
+    document.addEventListener('pointerlockchange', applyControlOverrides);
+    window.addEventListener('focus', applyControlOverrides);
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) applyControlOverrides();
+    });
 
     function setControlBinding(actionId, next) {
       ctrlOverrides[actionId] = next;
@@ -721,6 +742,7 @@
       if (dialogEl && dialogEl.isConnected) dialogEl.remove();
       if (curtainEl && curtainEl.isConnected) curtainEl.remove();
       dialogEl = null; curtainEl = null;
+      applyControlOverrides();   // don't wait for the next poll or pointer-lock event
     }
 
     function openDialog() {
