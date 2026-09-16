@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Crosshair Customizer
 // @namespace    crosshair-customizer
-// @version      0.8.0
+// @version      0.9.0
 // @description  Stack multiple crosshairs at once - the game's own seven styles plus dot, cross, circle, square, X and T - each with its own colour, size, thickness, gap, opacity and bow-spread response. Adds a Crosshair tab to the main menu.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -55,6 +55,34 @@
 
   var STORE_KEY = 'narrowone.crosshair.v1';
   var CONTAINER = '.crosshair-container';
+
+  /**
+   * The hotkey Hotkey Editor rebinds this to. A shared, tiny read - each mod
+   * checks it itself rather than trusting a message from another script, so
+   * this works regardless of what order Tampermonkey happens to run them in.
+   *
+   * Missing entry: use the default. Explicit null: unbound (this mod's
+   * default - it only ever had the menu button until Hotkey Editor could
+   * assign it one). Anything else: the code of the key it was rebound to.
+   */
+  var HOTKEYS_KEY = 'narrowone.hotkeys.v1';
+  function hotkeyFor(actionId, fallback) {
+    try {
+      var raw = localStorage.getItem(HOTKEYS_KEY);
+      if (!raw) return fallback;
+      var map = JSON.parse(raw);
+      if (!Object.prototype.hasOwnProperty.call(map, actionId)) return fallback;
+      return map[actionId];
+    } catch (e) { return fallback; }
+  }
+
+  /** Skip a hotkey while you're typing - a preset/layer name field included. */
+  function typingInDialog(e) {
+    var t = e.target;
+    if (!t || !t.tagName) return false;
+    var tag = t.tagName.toLowerCase();
+    return tag === 'input' || tag === 'textarea' || t.isContentEditable;
+  }
 
   /* ================================================================== *
    * Settings
@@ -1133,6 +1161,14 @@
   setInterval(function () { injectMenuButton(); keepLayersAlive(); }, 1000);
 
   window.addEventListener('keydown', function (e) {
+    // Unbound by default - only there if you set one in the Hotkey Editor.
+    var key = hotkeyFor('crosshair.toggle', null);
+    if (key !== null && e.code === key && !e.ctrlKey && !e.altKey && !e.metaKey &&
+        !typingInDialog(e)) {
+      e.preventDefault(); e.stopPropagation();
+      if (dialogEl && dialogEl.isConnected) closeDialog(); else openDialog();
+      return;
+    }
     if (e.code === 'Escape' && dialogEl && dialogEl.isConnected) {
       e.preventDefault();
       e.stopPropagation();

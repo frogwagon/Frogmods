@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         One Kill = One Stat Point
 // @namespace    narrowone One Kill = One Stat Point
-// @version      2.8.0
+// @version      2.9.0
 // @description  Keep your gear, lose your stats. Earn them back with kills, up to the caps your own gear set gives you.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -83,6 +83,39 @@
   var PO_RE = /function ([A-Za-z_$][\w$]*)\(\)\{if\(!([A-Za-z_$][\w$]*)\)throw new Error\("Main instance is not initialized"\);return \2\}/;
   var CACHE_RE = /^narrowClient\d+$/;
   var MARK = '__NARROW';
+
+  /**
+   * The hotkey Hotkey Editor rebinds this to. A shared, tiny read - each mod
+   * checks it itself rather than trusting a message from another script, so
+   * this works regardless of what order Tampermonkey happens to run them in.
+   *
+   * Missing entry: use the default. Explicit null: the Hotkey Editor turned
+   * it off. Anything else: the code of the key it was rebound to.
+   */
+  var HOTKEYS_KEY = 'narrowone.hotkeys.v1';
+  function hotkeyFor(actionId, fallback) {
+    try {
+      var raw = localStorage.getItem(HOTKEYS_KEY);
+      if (!raw) return fallback;
+      var map = JSON.parse(raw);
+      if (!Object.prototype.hasOwnProperty.call(map, actionId)) return fallback;
+      return map[actionId];
+    } catch (e) { return fallback; }
+  }
+
+  function keyLabel(code) {
+    if (code === null || code === undefined) return 'Unbound';
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+    if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+    return code;
+  }
+
+  /** A settings-note line that always names whatever key is actually bound. */
+  function keyHintText(actionId, fallbackKey, does) {
+    var key = hotkeyFor(actionId, fallbackKey);
+    if (key === null) return 'No key is bound to ' + does + ' - set one in the Hotkey Editor.';
+    return 'Press ' + keyLabel(key) + ' to ' + does + '.';
+  }
 
   /* ================================================================== *
    * Part 1 - get the patched bundle in through the game's own cache
@@ -259,7 +292,7 @@
     PAGE.__narrowOneUnderdog = true;
 
     var STORE_KEY = 'narrowone.underdog.v2';
-    var VERSION = '2.8.0';
+    var VERSION = '2.9.0';
 
     /* ---- the game's stat table, lifted from the bundle ---- */
     // Grouped the same way the game itself groups them - each stat's own
@@ -1357,7 +1390,7 @@
       ab.addEventListener('change', function () { cfg.autoOpen = ab.checked; save(); });
       ar.appendChild(ab);
       inner.appendChild(ar);
-      inner.appendChild(note('Press F to open or close this window.'));
+      inner.appendChild(note(keyHintText('underdog.toggle', 'KeyF', 'open or close this window')));
 
       addDiagnostics(inner);
     }
@@ -1455,12 +1488,15 @@
     /**
      * Keys.
      *
-     * F toggles the manager. It is taken in the capture phase and stopped
-     * there, so the game never sees that press - otherwise opening the manager
-     * would also fire whatever F does in game.
+     * The toggle key defaults to F but can be rebound (or turned off) with
+     * the Hotkey Editor mod - hotkeyFor() reads whatever it last saved.
+     * Whichever key it is, it is taken in the capture phase and stopped
+     * there, so the game never sees that press - otherwise opening the
+     * manager would also fire whatever that key does in game.
      *
      * Neither key fires while you are typing in the report box, which is a
-     * real textarea and would otherwise swallow an F and close on it.
+     * real textarea and would otherwise swallow the keystroke and close on
+     * it.
      */
     function typingInDialog(e) {
       var t = e.target;
@@ -1478,8 +1514,9 @@
         return;
       }
 
-      if (e.code !== 'KeyF') return;
-      if (e.ctrlKey || e.altKey || e.metaKey) return;   // leave Ctrl+F alone
+      var key = hotkeyFor('underdog.toggle', 'KeyF');
+      if (key === null || e.code !== key) return;
+      if (e.ctrlKey || e.altKey || e.metaKey) return;   // leave Ctrl+<key> alone
       if (typingInDialog(e)) return;
 
       e.preventDefault(); e.stopPropagation();

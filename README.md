@@ -26,7 +26,7 @@ a poking stick still pokes, only the numbers move.
 A run carries across matches and page reloads until you press Stop, so a long
 session banks kills the whole way through.
 
-- **F** opens or closes the manager.
+- **F** opens or closes the manager (rebindable in Hotkey Editor).
 - Press **Start** once you've spawned in with your gear on.
 - Each upgrade costs exactly 1 point - no bundled stats, no surprises.
 - If the mod can't tell which player object is yours, it lists everyone it
@@ -50,10 +50,26 @@ Shows your health as a live number beside the health bar, with a red screen
 tint at low HP and a green tint (plus heartbeat) while regenerating. Fully
 configurable from its own menu tab - colors, opacity, and thresholds.
 
-- **Insert** opens/closes its settings.
+- **Insert** opens/closes its settings (rebindable in Hotkey Editor).
 - See [docs/health-number.md](docs/health-number.md) for the full write-up.
 
-## Install (all three)
+### [Hotkey Editor](narrow-one-hotkeys.user.js)
+
+Rebind the keys the other mods use to open their menus, or turn any of them
+off. Click a key to rebind it, Escape cancels a rebind in progress, and it
+warns you if two actions end up sharing the same key.
+
+Each mod checks a shared spot in local storage for its own key rather than
+trusting a message from another script, so this works no matter what order
+Tampermonkey happens to run them in, and needs no changes if you're missing
+one of the other mods - its row just does nothing.
+
+- A **Hotkeys** button appears in the main menu.
+- Covers **1 Kill = 1 Stat Point** (default F) and **Health Number** (default
+  Insert). Crosshair Customizer has no default key - assign one here if you
+  want one.
+
+## Install (all four)
 
 1. Install **[Tampermonkey](https://www.tampermonkey.net/)** (Chrome, Edge,
    Firefox, Opera).
@@ -62,7 +78,7 @@ configurable from its own menu tab - colors, opacity, and thresholds.
 2. Open the Tampermonkey dashboard → **+** (Create a new script).
 3. Delete the template, paste in the whole contents of the `.user.js` file you
    want, and save (Ctrl+S).
-4. Repeat for any of the other two.
+4. Repeat for any of the others.
 5. Open <https://narrow.one/> and join a match.
 
 ## Notes

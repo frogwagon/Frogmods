@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Narrow One - Health Number
 // @namespace    narrowone-health-number
-// @version      2.0.0
+// @version      2.1.0
 // @description  Shows your health as a live number (0-100) beside the health bar, plus a red screen tint when you are low. Press Insert to open settings.
 // @author       frogwagon
 // @match        https://narrow.one/*
@@ -48,6 +48,32 @@
 
   var BAR_SELECTOR = '.health-ui-bar-container > .health-ui-bar.clip';
   var STORE_KEY = 'narrowone.healthNumber.v6'; // v6: flat strength, 0.5s beat
+
+  /**
+   * The hotkey Hotkey Editor rebinds this to. A shared, tiny read - each mod
+   * checks it itself rather than trusting a message from another script, so
+   * this works regardless of what order Tampermonkey happens to run them in.
+   *
+   * Missing entry: use the default. Explicit null: the Hotkey Editor turned
+   * it off. Anything else: the code of the key it was rebound to.
+   */
+  var HOTKEYS_KEY = 'narrowone.hotkeys.v1';
+  function hotkeyFor(actionId, fallback) {
+    try {
+      var raw = localStorage.getItem(HOTKEYS_KEY);
+      if (!raw) return fallback;
+      var map = JSON.parse(raw);
+      if (!Object.prototype.hasOwnProperty.call(map, actionId)) return fallback;
+      return map[actionId];
+    } catch (e) { return fallback; }
+  }
+
+  function keyLabel(code) {
+    if (code === null || code === undefined) return 'Unbound';
+    if (/^Key[A-Z]$/.test(code)) return code.slice(3);
+    if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+    return code;
+  }
 
   /* ================================================================== *
    * Settings
@@ -871,8 +897,22 @@
   injectMenuButton();
   setInterval(injectMenuButton, 1000);
 
+  /** Skip a hotkey while you're typing somewhere - a colour picker included. */
+  function typingInDialog(e) {
+    var t = e.target;
+    if (!t || !t.tagName) return false;
+    var tag = t.tagName.toLowerCase();
+    return tag === 'input' || tag === 'textarea' || t.isContentEditable;
+  }
+
   window.addEventListener('keydown', function (e) {
-    if (e.code === 'Insert') { e.preventDefault(); toggleDialog(); }
+    // Defaults to Insert; rebindable (or off) via the Hotkey Editor mod.
+    var key = hotkeyFor('health.toggle', 'Insert');
+    if (key !== null && e.code === key && !e.ctrlKey && !e.altKey && !e.metaKey &&
+        !typingInDialog(e)) {
+      e.preventDefault();
+      toggleDialog();
+    }
     if (e.code === 'Escape' && dialogEl && dialogEl.isConnected) {
       e.preventDefault();
       e.stopPropagation();
@@ -945,6 +985,10 @@
     }
   };
 
-  console.log('[Narrow One Health Number] loaded. Press Insert for settings, ' +
-              'or run NarrowHealthNumber.demo() to preview.');
+  (function () {
+    var key = hotkeyFor('health.toggle', 'Insert');
+    var hint = key === null ? 'no key bound for settings' : 'press ' + keyLabel(key) + ' for settings';
+    console.log('[Narrow One Health Number] loaded. ' + hint + ', ' +
+                'or run NarrowHealthNumber.demo() to preview.');
+  })();
 })();
