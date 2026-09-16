@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         One Kill = One Stat Point
 // @namespace    narrowone One Kill = One Stat Point
-// @version      2.9.0
+// @version      2.10.0
 // @description  Keep your gear, lose your stats. Earn them back with kills, up to the caps your own gear set gives you.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -292,7 +292,7 @@
     PAGE.__narrowOneUnderdog = true;
 
     var STORE_KEY = 'narrowone.underdog.v2';
-    var VERSION = '2.9.0';
+    var VERSION = '2.10.0';
 
     /* ---- the game's stat table, lifted from the bundle ---- */
     // Grouped the same way the game itself groups them - each stat's own
@@ -972,7 +972,15 @@
 
     var dialogEl = null, curtainEl = null, bodyEl = null, notice = null, showReport = false;
 
-    function refresh() { if (bodyEl) fill(bodyEl); }
+    function refresh() {
+      if (!bodyEl) return;
+      fill(bodyEl);
+      // Never a Tab-navigation stop - the game silently drops every keydown
+      // while any BUTTON/INPUT/SELECT has focus (its own inputHasFocus()
+      // check). fill() rebuilds the slider/checkbox from scratch on nearly
+      // every interaction, so this has to run every time, not just once.
+      bodyEl.querySelectorAll('button, input, select').forEach(function (el) { el.tabIndex = -1; });
+    }
 
     function h3(t) {
       var h = document.createElement('h3');
@@ -1192,6 +1200,7 @@
     function button(label, onClick, disabled) {
       var b = document.createElement('button');
       b.className = 'dialog-button blueNight wrinkledPaper';
+      b.tabIndex = -1;   // see the menu button's own comment on why
       b.style.setProperty('--wrinkled-paper-seed', seed());
       b.innerHTML = '<span>' + label + '</span>';
       if (disabled) b.disabled = true;
@@ -1427,6 +1436,7 @@
       list.className = 'settings-list';
       bodyEl = document.createElement('div');
       fill(bodyEl);
+      bodyEl.querySelectorAll('button, input, select').forEach(function (el) { el.tabIndex = -1; });
       list.appendChild(bodyEl);
       dialogEl.appendChild(list);
 
@@ -1454,6 +1464,11 @@
       var b = document.createElement('button');
       b.className = 'wrinkledPaper main-menu-button';
       b.setAttribute('aria-label', '1 Kill = 1 Stat Point');
+      // Never a Tab-navigation stop - the game silently drops every keydown
+      // while any BUTTON/INPUT/SELECT has focus (its own inputHasFocus()
+      // check), so this button must never be where Tab's default focus
+      // cycling can land while you're actually playing.
+      b.tabIndex = -1;
       b.style.setProperty('--wrinkled-paper-seed', seed());
 
       var img = document.createElement('div');

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Narrow One - Health Number
 // @namespace    narrowone-health-number
-// @version      2.1.0
+// @version      2.2.0
 // @description  Shows your health as a live number (0-100) beside the health bar, plus a red screen tint when you are low. Press Insert to open settings.
 // @author       frogwagon
 // @match        https://narrow.one/*
@@ -816,6 +816,7 @@
 
     var resetBtn = document.createElement('button');
     resetBtn.className = 'dialog-button blueNight wrinkledPaper';
+    resetBtn.tabIndex = -1;   // see the menu button's own comment on why
     resetBtn.style.setProperty('--wrinkled-paper-seed', seed());
     resetBtn.innerHTML = '<span>Reset</span>';
     resetBtn.addEventListener('click', function () {
@@ -827,6 +828,7 @@
 
     var doneBtn = document.createElement('button');
     doneBtn.className = 'dialog-button blueNight wrinkledPaper';
+    doneBtn.tabIndex = -1;   // see the menu button's own comment on why
     doneBtn.style.setProperty('--wrinkled-paper-seed', seed());
     doneBtn.innerHTML = '<span>Done</span>';
     doneBtn.addEventListener('click', closeDialog);
@@ -841,6 +843,12 @@
       dialogEl.addEventListener(t, function (e) { e.stopPropagation(); });
     });
     if (document.pointerLockElement) document.exitPointerLock();
+
+    // Never a Tab-navigation stop - the game silently drops every keydown
+    // while any BUTTON/INPUT/SELECT has focus (its own inputHasFocus()
+    // check). This dialog is only built once per open rather than
+    // re-rendered, so one sweep here catches every control in it.
+    dialogEl.querySelectorAll('button, input, select').forEach(function (el) { el.tabIndex = -1; });
 
     host.appendChild(dialogEl);
   }
@@ -864,6 +872,11 @@
     var btn = document.createElement('button');
     btn.className = 'wrinkledPaper main-menu-button';
     btn.setAttribute('aria-label', 'Health');
+    // Never a Tab-navigation stop - the game silently drops every keydown
+    // while any BUTTON/INPUT/SELECT has focus (its own inputHasFocus()
+    // check), so this button must never be where Tab's default focus
+    // cycling can land while you're actually playing.
+    btn.tabIndex = -1;
     btn.style.setProperty('--wrinkled-paper-seed', seed());
 
     var img = document.createElement('div');

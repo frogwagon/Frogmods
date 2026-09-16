@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Crosshair Customizer
 // @namespace    crosshair-customizer
-// @version      0.9.0
+// @version      0.10.0
 // @description  Stack multiple crosshairs at once - the game's own seven styles plus dot, cross, circle, square, X and T - each with its own colour, size, thickness, gap, opacity and bow-spread response. Adds a Crosshair tab to the main menu.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -1092,6 +1092,11 @@
     });
     if (document.pointerLockElement) document.exitPointerLock();
 
+    // Add/Done live outside fillList's own container, so the wrap above
+    // doesn't reach them - one more sweep over the whole dialog catches
+    // those two along with everything fillList already covered.
+    dialogEl.querySelectorAll('button, input, select').forEach(function (el) { el.tabIndex = -1; });
+
     host.appendChild(dialogEl);
   }
 
@@ -1114,6 +1119,11 @@
     var btn = document.createElement('button');
     btn.className = 'wrinkledPaper main-menu-button';
     btn.setAttribute('aria-label', 'Crosshair');
+    // Never a Tab-navigation stop - the game silently drops every keydown
+    // while any BUTTON/INPUT/SELECT has focus (its own inputHasFocus()
+    // check), so this button must never be where Tab's default focus
+    // cycling can land while you're actually playing.
+    btn.tabIndex = -1;
     btn.style.setProperty('--wrinkled-paper-seed', seed());
 
     var img = document.createElement('div');
@@ -1151,6 +1161,25 @@
   /* ================================================================== *
    * Boot
    * ================================================================== */
+
+  /**
+   * Never let a dialog button become a Tab-navigation stop.
+   *
+   * The game silently drops every keydown while any BUTTON/INPUT/SELECT has
+   * focus (its own inputHasFocus() check), so Tab's default browser focus
+   * cycling landing on one of ours would look exactly like the game
+   * ignoring your controls - and it stays that way until focus moves off
+   * it again. fillList rebuilds the dialog's buttons from scratch on nearly
+   * every interaction, so this wraps it once here rather than touching
+   * every one of its call sites.
+   */
+  (function guardFillListButtons() {
+    var original = fillList;
+    fillList = function (inner) {
+      original(inner);
+      inner.querySelectorAll('button, input, select').forEach(function (el) { el.tabIndex = -1; });
+    };
+  })();
 
   injectStyle();
   applyVanillaHidden();

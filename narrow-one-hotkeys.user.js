@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hotkey Editor
 // @namespace    narrowone-hotkeys
-// @version      2.1.1
+// @version      2.1.2
 // @description  Rebind the game's own controls, plus menu shortcuts like Shop and Settings that never had a key at all, plus the toggle keys of whichever other Narrow One mods you have installed. Adds a Hotkeys tab to the main menu.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -437,6 +437,7 @@
     function button(label, onClick, disabled) {
       var b = document.createElement('button');
       b.className = 'dialog-button blueNight wrinkledPaper';
+      b.tabIndex = -1;   // see the menu button's own comment on why
       b.style.setProperty('--wrinkled-paper-seed', seed());
       b.innerHTML = '<span>' + label + '</span>';
       if (disabled) b.disabled = true;
@@ -511,7 +512,19 @@
      * ================================================================ */
 
     var dialogEl = null, curtainEl = null, bodyEl = null;
-    function refresh() { if (bodyEl) fill(bodyEl); }
+    function refresh() {
+      if (!bodyEl) return;
+      fill(bodyEl);
+      guardFocus(bodyEl);
+    }
+
+    // Never a Tab-navigation stop - the game silently drops every keydown
+    // while any BUTTON/INPUT/SELECT has focus (its own inputHasFocus()
+    // check). fill() rebuilds every row from scratch on nearly every
+    // interaction, so this has to run every time, not just once.
+    function guardFocus(root) {
+      root.querySelectorAll('button, input, select').forEach(function (el) { el.tabIndex = -1; });
+    }
 
     function modConflictsFor(action, code) {
       if (code === null) return [];
@@ -549,6 +562,7 @@
       var keyEl = document.createElement('button');
       keyEl.className = 'nhk-key';
       keyEl.type = 'button';
+      keyEl.tabIndex = -1;   // see the menu button's own comment on why
       keyEl.textContent = keyLabel(code);
       keyEl.title = 'Click to rebind';
       keyEl.addEventListener('click', function () {
@@ -618,6 +632,7 @@
       var keyEl = document.createElement('button');
       keyEl.className = 'nhk-key';
       keyEl.type = 'button';
+      keyEl.tabIndex = -1;   // see the menu button's own comment on why
       keyEl.textContent = bindingLabel(binding);
       keyEl.title = 'Click to rebind - a key or a mouse button';
       keyEl.addEventListener('click', function () {
@@ -770,6 +785,7 @@
       list.className = 'settings-list';
       bodyEl = document.createElement('div');
       fill(bodyEl);
+      guardFocus(bodyEl);
       list.appendChild(bodyEl);
       dialogEl.appendChild(list);
 
@@ -801,6 +817,12 @@
       var b = document.createElement('button');
       b.className = 'wrinkledPaper main-menu-button';
       b.setAttribute('aria-label', 'Hotkeys');
+      // Never a Tab-navigation stop - the game silently drops every keydown
+      // while any BUTTON/INPUT/SELECT has focus (its own inputHasFocus()
+      // check), so this button must never be where Tab's default focus
+      // cycling can land while you're actually playing. This is almost
+      // certainly what "my rebind stopped working" actually was.
+      b.tabIndex = -1;
       b.style.setProperty('--wrinkled-paper-seed', seed());
 
       var img = document.createElement('div');
