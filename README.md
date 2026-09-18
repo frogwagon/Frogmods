@@ -80,7 +80,28 @@ Maps, Squad, Full Screen, Exit Round - all unbound until you assign one.
   Screen/Exit Round - none of those have a default, so nothing changes
   until you set one.
 
-## Install (all four)
+### [Settings & Stats](narrow-one-settings-stats.user.js)
+
+Wider ranges on the settings the game already has, plus a stats panel
+richer than the single ping/fps line behind the native toggle.
+
+The dialog's own sliders cap out well short of what the setting will
+actually accept - `setValue()` stores whatever you give it, no clamping at
+all. FOV, mouse sensitivity, crosshair accuracy offset, UI scale and render
+quality each get a second slider here with a wider range, writing through
+that exact same call - same setting, same storage, just more room on the
+dial.
+
+Stats shows kills, deaths, flags, K/D, score, elo, ping and fps live for
+the match you're in, plus a running total that carries across matches
+until you reset it - kills, deaths, flags and K/D for the whole session,
+not just the current round.
+
+- A **Settings & Stats** button appears in the main menu.
+- Needs the same one-off cache patch as 1 Kill = 1 Stat Point to reach
+  your settings and stats - safe to have installed alongside it.
+
+## Install (all five)
 
 1. Install **[Tampermonkey](https://www.tampermonkey.net/)** (Chrome, Edge,
    Firefox, Opera).
