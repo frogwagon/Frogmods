@@ -82,24 +82,29 @@ Maps, Squad, Full Screen, Exit Round - all unbound until you assign one.
 
 ### [Settings & Stats](narrow-one-settings-stats.user.js)
 
-Wider ranges on the settings the game already has, plus a stats panel
-richer than the single ping/fps line behind the native toggle.
+No tab of its own - everything lands where the game already has a spot
+for it.
 
-The dialog's own sliders cap out well short of what the setting will
-actually accept - `setValue()` stores whatever you give it, no clamping at
-all. FOV, mouse sensitivity, crosshair accuracy offset, UI scale and render
-quality each get a second slider here with a wider range, writing through
-that exact same call - same setting, same storage, just more room on the
-dial.
+**Settings dialog:** FOV, mouse sensitivity, crosshair accuracy offset, UI
+scale and render quality get widened right on the native slider the moment
+the dialog opens. The game's own `setValue()` does no clamping at all - the
+slider's min/max was only ever a UI choice - so this is the same setting,
+same row, same everything, just a wider native range to drag.
 
-Stats shows kills, deaths, flags, K/D, score, elo, ping and fps live for
-the match you're in, plus a running total that carries across matches
-until you reset it - kills, deaths, flags and K/D for the whole session,
-not just the current round.
+**Click your name:** the profile dialog you already get from the corner
+profile keeps its real lifetime stats (games played, kills, deaths, ...) -
+this adds a K/D row plus a running session block (kills/deaths/flags for
+this browser session, carried across matches) right into that same panel.
 
-- A **Settings & Stats** button appears in the main menu.
-- Needs the same one-off cache patch as 1 Kill = 1 Stat Point to reach
-  your settings and stats - safe to have installed alongside it.
+**Hold Tab:** while the scoreboard is up, a small panel shows this match's
+kills/deaths/flags/K-D/ping/fps plus the running session, for exactly as
+long as Tab is held - hooked into the game's own Tab binding, not a
+separate toggle.
+
+- Applies its own one-off cache patch automatically the first time the
+  game's cache exists (play one round) - no button to press, just one
+  page reload. Safe alongside 1 Kill = 1 Stat Point, which uses the same
+  patch.
 
 ## Install (all five)
 

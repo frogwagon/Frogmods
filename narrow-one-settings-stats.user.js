@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      1.0.0
-// @description  Wider ranges on FOV, sensitivity, crosshair offset, UI scale and quality than the native sliders allow, plus a live stats panel (K/D, flags, elo, ping, fps) that carries totals across matches. Adds a Settings & Stats tab to the main menu.
+// @version      2.0.0
+// @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
 // @run-at       document-start
@@ -12,45 +12,44 @@
 /*
  * Settings & Stats  -  Narrow One
  * ---------------------------------
- * Two things that don't share a mechanism, sharing a tab because they're
- * both "more of what the game already has".
+ * No tab of its own. Everything lands where the game already has a spot
+ * for it.
  *
- * 1. Extended settings. Every setting the game has already gets a slider in
- *    its own Settings dialog - there is nothing hidden to unlock. What IS
- *    true is that the dialog's sliders cap out well short of what the
- *    underlying value will actually accept:
+ * 1. Settings. Every setting the game has already gets a slider in its own
+ *    Settings dialog - there's nothing hidden to unlock. What IS true: the
+ *    underlying setValue() stores whatever you give it with zero clamping,
+ *    the slider's min/max is a UI decision, not a stored limit. So this
+ *    widens the actual native sliders - FOV, mouse sensitivity, crosshair
+ *    accuracy offset, UI scale, render quality - in place, the moment the
+ *    Settings dialog opens. Same row, same listener, same everything -
+ *    just a wider min/max attribute on the same <input>.
  *
- *      setValue(id, value) {
- *        this.currentValues.set(id, value);
- *        this.fireValueChange(id, value);
- *        this.saveSettings();
- *      }
+ * 2. Stats, two places:
  *
- *    No clamping at all - the slider's min/max is a UI decision, not a
- *    stored limit. FOV, mouse sensitivity, crosshair accuracy offset, UI
- *    scale and render quality all get a second slider here with a wider
- *    range, writing through that exact same call. Same setting, same
- *    storage, same persistence - just more room on the dial.
+ *    - Click your name. The corner profile you already click opens the
+ *      game's own profile dialog with real lifetime stats from its server -
+ *      games played, games won, flags, points, kills, deaths:
  *
- * 2. Stats. The game shows one line - ping and fps - behind a single
- *    toggle. Your player object already carries more than that every
- *    match (from the server's own score updates):
+ *        n("gamesPlayed","Games Played"), n("kills","Kills"), ...
+ *        po().profileState.stats   // the numbers behind those rows
  *
- *      setScores({scores: t, elo: e}) {
- *        const {flags, kills, deaths, total} = t;
- *        this.scoreFlags = flags; this.scoreKills = kills;
- *        this.scoreDeaths = deaths; this.scoreTotal = total;
- *        this.elo = e;
- *      }
+ *      This adds a K/D row and a running session block (this browser
+ *      session's kills/deaths/flags, carried across matches) right into
+ *      that same panel, styled to match its existing rows.
  *
- *    This tab shows all of it live, plus a running total that carries
- *    across matches until you reset it - the same "a run outlives a match"
- *    approach 1 Kill = 1 Stat Point uses for kills.
+ *    - Hold Tab. That's the game's own key for the scoreboard - held down,
+ *      via onPressedDown/onPressedUp on its own input binding. This hooks
+ *      the exact same down/up events to show a small live panel (this
+ *      match's kills/deaths/flags/K-D/ping/fps, plus the running session)
+ *      for exactly as long as Tab is held, the same rhythm the scoreboard
+ *      already uses.
  *
- * Reaching the settings manager and your player object both need the same
- * one-line bundle patch 1 Kill = 1 Stat Point uses. See that mod's header
- * for the full reasoning. The patch is idempotent, so it's safe to have
- * multiple mods apply it - whichever loads first does the actual write.
+ * Reaching the settings manager, the profile state and your own player
+ * object all need the same one-line bundle patch 1 Kill = 1 Stat Point
+ * uses (see that mod's header for the full reasoning). Idempotent, so
+ * it's safe alongside any other mod that also applies it. This one applies
+ * itself automatically - once the cache exists (play one round), it
+ * patches and reloads on its own, no button to press.
  */
 
 (function () {
@@ -64,8 +63,7 @@
   var MARK = '__NARROW';
 
   /* ================================================================== *
-   * Part 1 - the same cache patch 1 Kill = 1 Stat Point uses, to reach
-   * po().settingsManager and your own player object.
+   * Part 1 - the same cache patch 1 Kill = 1 Stat Point uses.
    * ================================================================== */
 
   var patchState = { ok: false, error: null, cacheName: null, entryUrl: null, patched: false };
@@ -144,18 +142,6 @@
     });
   }
 
-  function disablePatch() {
-    return findCacheName().then(function (name) {
-      if (!name) return 'nothing to undo';
-      return caches.open(name).then(function (cache) {
-        return findEntryUrl(cache).then(function (url) {
-          if (!url) return 'nothing to undo';
-          return cache.delete(url, { ignoreSearch: true }).then(function () { return 'restored'; });
-        });
-      });
-    });
-  }
-
   function checkPatched() {
     return findCacheName().then(function (name) {
       patchState.cacheName = name;
@@ -179,7 +165,29 @@
     });
   }
 
-  checkPatched();
+  /** No button to press - once the cache exists, patch it and reload, once. */
+  (function autoPatch() {
+    var tries = 0;
+    function attempt() {
+      tries++;
+      checkPatched().then(function (patched) {
+        if (patched) return;
+        if (!patchState.cacheName) {
+          if (tries < 40) setTimeout(attempt, 3000);   // keep checking - ~2 minutes
+          return;
+        }
+        enablePatch().then(function (result) {
+          if (result === 'already patched') return;
+          console.log('[Settings & Stats] patched the game - reloading once to connect.');
+          location.reload();
+        }).catch(function (e) {
+          patchState.error = e.message;
+          console.warn('[Settings & Stats] could not patch:', e.message);
+        });
+      });
+    }
+    attempt();
+  })();
 
   function findGame() { return PAGE[MARK] || null; }
 
@@ -199,7 +207,7 @@
     if (PAGE.__narrowOneSettingsStats) return;
     PAGE.__narrowOneSettingsStats = true;
 
-    var STORE_KEY = 'narrowone.settingsstats.v1';
+    var STORE_KEY = 'narrowone.settingsstats.v2';
 
     /* ---- finding your own player, same shape as 1 Kill = 1 Stat Point ---- */
 
@@ -207,7 +215,7 @@
       var found = [];
       if (!root) return found;
       var seen = new Set();
-      var queue = [{ o: root, d: 0, p: 'game' }];
+      var queue = [{ o: root, d: 0 }];
       var visited = 0;
 
       while (queue.length && visited < 40000 && found.length < limit) {
@@ -217,38 +225,25 @@
         seen.add(o);
         visited++;
 
-        try { if (predicate(o)) found.push({ o: o, path: cur.p, depth: cur.d }); } catch (e) {}
+        try { if (predicate(o)) found.push(o); } catch (e) {}
         if (cur.d >= 8) continue;
 
-        var push = (function (c) {
-          return function (v, label) {
-            if (!v || typeof v !== 'object') return;
-            if (typeof Node !== 'undefined' && v instanceof Node) return;
-            if (v instanceof Window) return;
-            queue.push({ o: v, d: c.d + 1, p: c.p.length < 120 ? c.p + label : c.p });
-          };
-        })(cur);
+        var push = function (v) {
+          if (!v || typeof v !== 'object') return;
+          if (typeof Node !== 'undefined' && v instanceof Node) return;
+          if (v instanceof Window) return;
+          queue.push({ o: v, d: cur.d + 1 });
+        };
 
-        if (o instanceof Map) {
-          var mi = 0;
-          o.forEach(function (v, k) { if (mi++ < 64) push(v, '.get(' + String(k).slice(0, 12) + ')'); });
-          continue;
-        }
-        if (o instanceof Set) {
-          var si = 0;
-          o.forEach(function (v) { push(v, '[set#' + (si++) + ']'); });
-          continue;
-        }
-        if (Array.isArray(o)) {
-          for (var a = 0; a < o.length && a < 200; a++) push(o[a], '[' + a + ']');
-          continue;
-        }
+        if (o instanceof Map) { o.forEach(push); continue; }
+        if (o instanceof Set) { o.forEach(push); continue; }
+        if (Array.isArray(o)) { o.forEach(push); continue; }
         var keys;
         try { keys = Object.keys(o); } catch (e) { continue; }
         for (var i = 0; i < keys.length && i < 200; i++) {
           var v;
           try { v = o[keys[i]]; } catch (e) { continue; }
-          push(v, '.' + keys[i]);
+          push(v);
         }
       }
       return found;
@@ -257,41 +252,126 @@
     function hasScores(o) { return Object.prototype.hasOwnProperty.call(o, 'scoreKills'); }
 
     var player = null;
-
     function findPlayer() {
       if (player && player.hasOwnership) return player;
       var g = findGame();
       if (!g) return null;
-      var hits = collectMatching(g, function (o) {
-        return hasScores(o) && o.hasOwnership === true;
-      }, 1);
-      player = hits.length ? hits[0].o : null;
+      var hits = collectMatching(g, function (o) { return hasScores(o) && o.hasOwnership === true; }, 1);
+      player = hits.length ? hits[0] : null;
       return player;
     }
 
-    function findSettings() {
-      var g = findGame();
-      return (g && g.settingsManager && typeof g.settingsManager.getValue === 'function')
-        ? g.settingsManager : null;
+    /* ================================================================ *
+     * 1. Widen the native settings sliders in place
+     * ================================================================ */
+
+    // label text -> wider [min, max], straight from the bundle's own
+    // dialog config and defaultValues object for the "native" comparison.
+    var WIDER = {
+      'Field of view': { min: 20, max: 170, nativeMin: 40, nativeMax: 140 },
+      'Mouse sensitivity': { min: 0.05, max: 10, nativeMin: 0.1, nativeMax: 5 },
+      'Accuracy Offset': { min: 0, max: 10, nativeMin: 0, nativeMax: 4 },
+      'UI scale': { min: 0.3, max: 3, nativeMin: 0.5, nativeMax: 2 },
+      'Quality': { min: 0.1, max: 5, nativeMin: 0.1, nativeMax: 3 }
+    };
+
+    function widenSettingsDialog(dialog) {
+      var rows = dialog.querySelectorAll('.settings-item');
+      rows.forEach(function (row) {
+        var textEl = row.querySelector('.settings-item-text');
+        if (!textEl) return;
+        var wider = WIDER[textEl.textContent.trim()];
+        if (!wider) return;
+        var input = row.querySelector('input[type="range"]');
+        if (!input || input.dataset.nssWidened) return;
+        input.min = wider.min;
+        input.max = wider.max;
+        input.dataset.nssWidened = '1';
+        input.title = 'Native range: ' + wider.nativeMin + '–' + wider.nativeMax;
+      });
     }
 
-    /* ---- extended settings ---- */
+    /* ================================================================ *
+     * 2a. Add K/D + session rows into the native profile dialog
+     * ================================================================ */
 
-    // Real native min/max/default, straight from the bundle's own dialog
-    // and defaultValues object - the "native" figures shown under each
-    // slider here, not a guess.
-    var SETTINGS = [
-      { id: 'fov', label: 'Field of view', def: 90, nativeMin: 40, nativeMax: 140, min: 20, max: 170, step: 1 },
-      { id: 'mouseSensitivity', label: 'Mouse sensitivity', def: 1, nativeMin: 0.1, nativeMax: 5, min: 0.05, max: 10, step: 0.01 },
-      { id: 'crosshairAccuracyOffset', label: 'Crosshair accuracy offset', def: 1, nativeMin: 0, nativeMax: 4, min: 0, max: 10, step: 0.1 },
-      { id: 'uiScale', label: 'UI scale', def: 1, nativeMin: 0.5, nativeMax: 2, min: 0.3, max: 3, step: 0.05 },
-      { id: 'quality', label: 'Render quality', def: 1, nativeMin: 0.1, nativeMax: 3, min: 0.1, max: 5, step: 0.1 }
-    ];
+    function profileStatRow(iconKey, label) {
+      var n = document.createElement('div');
+      n.classList.add('wrinkledPaper', 'profile-stat', 'nss-added-stat');
+      n.style.setProperty('--wrinkled-paper-seed', String(Math.floor(Math.random() * 99999)));
+      var icon = document.createElement('div');
+      icon.classList.add('profile-stat-icon');
+      n.appendChild(icon);
+      var a = document.createElement('div');
+      a.textContent = label;
+      n.appendChild(a);
+      var r = document.createElement('div');
+      r.textContent = '-';
+      n.appendChild(r);
+      return { el: n, valueEl: r };
+    }
 
-    /* ---- stats - live plus a run that carries across matches ---- */
+    function enrichProfileDialog(dialog) {
+      var statsEl = dialog.querySelector('.profile-stats');
+      if (!statsEl || statsEl.dataset.nssEnriched) return;
+      statsEl.dataset.nssEnriched = '1';
+
+      var g = findGame();
+      var stats = (g && g.profileState && g.profileState.stats) || {};
+      var kills = Number(stats.kills) || 0;
+      var deaths = Number(stats.deaths) || 0;
+      var kd = deaths > 0 ? (kills / deaths).toFixed(2) : (kills > 0 ? kills.toFixed(2) : '0.00');
+
+      var kdRow = profileStatRow('kills', 'K/D');
+      kdRow.valueEl.textContent = kd;
+      statsEl.appendChild(kdRow.el);
+
+      var totals = liveSessionTotals();
+      var sessionKd = totals.deaths > 0 ? (totals.kills / totals.deaths).toFixed(2) :
+        (totals.kills > 0 ? totals.kills.toFixed(2) : '0.00');
+
+      [
+        ['kills', 'Session Kills', totals.kills],
+        ['deaths', 'Session Deaths', totals.deaths],
+        ['flagsCaptured', 'Session Flags', totals.flags],
+        ['kills', 'Session K/D', sessionKd]
+      ].forEach(function (row) {
+        var r = profileStatRow(row[0], row[1]);
+        r.valueEl.textContent = row[2];
+        statsEl.appendChild(r.el);
+      });
+    }
+
+    /* ================================================================ *
+     * Watch for the game's own dialogs and hook into the two we care
+     * about, the moment they open. Same pattern Crosshair Customizer uses
+     * to strip its own group out of this exact dialog.
+     * ================================================================ */
+
+    var dialogWatcher = new MutationObserver(function (muts) {
+      muts.forEach(function (m) {
+        Array.prototype.forEach.call(m.addedNodes, function (node) {
+          if (!node || node.nodeType !== 1 || !node.classList || !node.classList.contains('dialog')) return;
+          // Settle a tick - some dialogs finish building their rows just after insertion.
+          setTimeout(function () {
+            widenSettingsDialog(node);
+            enrichProfileDialog(node);
+          }, 0);
+        });
+      });
+    });
+
+    function watchGameDialogs() {
+      var host = document.getElementById('gameWrapper') || document.body;
+      dialogWatcher.observe(host, { childList: true });
+    }
+
+    /* ================================================================ *
+     * 2b. Session totals, carried across matches
+     * ================================================================ */
 
     var session = { kills: 0, deaths: 0, flags: 0, matches: 1 };
-    var baseline = null;   // {kills, deaths, flags} at the start of the current match
+    var baseline = null;
     var sawHealthBar = !!document.querySelector('.health-ui-bar-container');
 
     function loadSession() {
@@ -308,13 +388,6 @@
     }
     loadSession();
 
-    function resetSession() {
-      session = { kills: 0, deaths: 0, flags: 0, matches: 1 };
-      baseline = null;
-      saveSession();
-    }
-
-    /** Bank whatever the match-in-progress contributed, ready for a new one. */
     function bankCurrentMatch() {
       var p = findPlayer();
       if (!p || !baseline) return;
@@ -324,12 +397,23 @@
       saveSession();
     }
 
+    function liveSessionTotals() {
+      var p = findPlayer();
+      var mk = 0, md = 0, mf = 0;
+      if (p && baseline) {
+        mk = Math.max(0, (p.scoreKills || 0) - baseline.kills);
+        md = Math.max(0, (p.scoreDeaths || 0) - baseline.deaths);
+        mf = Math.max(0, (p.scoreFlags || 0) - baseline.flags);
+      }
+      return { kills: session.kills + mk, deaths: session.deaths + md, flags: session.flags + mf };
+    }
+
     setInterval(function () {
       var inMatch = !!document.querySelector('.health-ui-bar-container');
       if (inMatch && !sawHealthBar) {
         bankCurrentMatch();
         session.matches++;
-        player = null;               // last match's player object is stale
+        player = null;
         baseline = null;
         saveSession();
       }
@@ -341,27 +425,14 @@
       }
     }, 500);
 
-    /** This match's contribution on top of the banked session total. */
-    function liveTotals() {
-      var p = findPlayer();
-      var matchKills = 0, matchDeaths = 0, matchFlags = 0;
-      if (p && baseline) {
-        matchKills = Math.max(0, (p.scoreKills || 0) - baseline.kills);
-        matchDeaths = Math.max(0, (p.scoreDeaths || 0) - baseline.deaths);
-        matchFlags = Math.max(0, (p.scoreFlags || 0) - baseline.flags);
-      }
-      return {
-        kills: session.kills + matchKills,
-        deaths: session.deaths + matchDeaths,
-        flags: session.flags + matchFlags
-      };
-    }
-
-    /* ---- fps, computed locally - not something the bundle exposes as a number ---- */
+    /* ================================================================ *
+     * 2c. Hold Tab -> a small live-stats panel, exactly as long as the
+     * scoreboard itself is up.
+     * ================================================================ */
 
     var fps = 0;
     (function fpsLoop() {
-      var last = performance.now(), frames = 0, windowStart = last;
+      var windowStart = performance.now(), frames = 0;
       function tick(now) {
         requestAnimationFrame(tick);
         frames++;
@@ -373,27 +444,17 @@
       requestAnimationFrame(tick);
     })();
 
-    /* ================================================================ *
-     * Look and feel
-     * ================================================================ */
-
-    var ICON = '<svg viewBox="0 0 101 104" xmlns="http://www.w3.org/2000/svg">' +
-      '<path d="M50 6 L90 26 L90 58 C90 80 72 92 50 98 C28 92 10 80 10 58 L10 26 Z" ' +
-      'fill="none" stroke="black" stroke-width="7"/>' +
-      '<path d="M32 52 L45 65 L70 38" fill="none" stroke="black" stroke-width="8" ' +
-      'stroke-linecap="round" stroke-linejoin="round"/></svg>';
-    var ICON_URL = 'data:image/svg+xml,' + encodeURIComponent(ICON);
-
-    function seed() { return Math.floor(Math.random() * 99999); }
+    var panelEl = null;
 
     var CSS = [
-      '#nss-dialog .nss-note { opacity: .6; margin: 2px 0 10px; }',
-      '#nss-dialog .nss-native { opacity: .45; font-size: 11px; }',
-      '#nss-dialog .nss-stat { display:flex; justify-content:space-between; gap:10px; ' +
-        'padding:6px 0; border-bottom:1px solid rgba(0,0,0,.12); }',
-      '#nss-dialog .nss-stat:last-child { border-bottom:none; }',
-      '#nss-dialog .nss-stat b { font-size:16px; }',
-      '#nss-dialog .nss-setup-row { display:flex; gap:8px; margin: 6px 0 4px; }'
+      '#nss-panel { position: fixed; top: 16px; right: 16px; z-index: 60; ' +
+        'background: rgba(15,15,20,.72); color: #fff; padding: 10px 16px; border-radius: 10px; ' +
+        'font: 600 13px system-ui, sans-serif; pointer-events: none; min-width: 150px; }',
+      '#nss-panel .nss-row { display:flex; justify-content:space-between; gap: 16px; padding: 2px 0; }',
+      '#nss-panel .nss-row span { opacity: .6; font-weight: 400; }',
+      '#nss-panel .nss-head { opacity: .5; font-size: 11px; text-transform: uppercase; ' +
+        'letter-spacing: .04em; margin: 6px 0 2px; }',
+      '#nss-panel .nss-head:first-child { margin-top: 0; }'
     ].join('\n');
 
     (function injectStyle() {
@@ -404,283 +465,69 @@
       (document.head || document.documentElement).appendChild(el);
     })();
 
-    function h3(t) {
-      var h = document.createElement('h3');
-      h.className = 'settings-group-header';
-      h.textContent = t;
-      return h;
-    }
-    function note(t) {
-      var d = document.createElement('div');
-      d.className = 'nss-note';
-      d.textContent = t;
-      return d;
-    }
-    function button(label, onClick, disabled) {
-      var b = document.createElement('button');
-      b.className = 'dialog-button blueNight wrinkledPaper';
-      b.tabIndex = -1;   // Tab landing on this would stop every in-game control - see Hotkey Editor
-      b.style.setProperty('--wrinkled-paper-seed', seed());
-      b.innerHTML = '<span>' + label + '</span>';
-      if (disabled) b.disabled = true;
-      else b.addEventListener('click', function (e) { e.preventDefault(); onClick(); });
-      return b;
+    function panelRow(label, value) {
+      return '<div class="nss-row"><span>' + label + '</span><b>' + value + '</b></div>';
     }
 
-    function statRow(label, value) {
-      var r = document.createElement('div');
-      r.className = 'nss-stat';
-      r.innerHTML = '<span>' + label + '</span><b>' + value + '</b>';
-      return r;
+    function showPanel() {
+      if (panelEl) return;
+      panelEl = document.createElement('div');
+      panelEl.id = 'nss-panel';
+      document.body.appendChild(panelEl);
+      renderPanel();
     }
-
-    function settingRow(s, settings) {
-      var current = settings.getValue(s.id);
-      if (typeof current !== 'number' || isNaN(current)) current = s.def;
-
-      var kr = document.createElement('label');
-      kr.className = 'settings-item';
-      var kt = document.createElement('div');
-      kt.className = 'settings-item-text';
-      kt.textContent = s.label;
-      kr.appendChild(kt);
-
-      var sl = document.createElement('div');
-      sl.className = 'settings-item-slider';
-      var si = document.createElement('input');
-      si.className = 'dialog-range-input';
-      si.tabIndex = -1;
-      si.type = 'range'; si.min = s.min; si.max = s.max; si.step = s.step; si.value = current;
-      var sv = document.createElement('div');
-      sv.className = 'settings-item-slider-value';
-      sv.textContent = round(current, s.step);
-      si.addEventListener('input', function () {
-        var v = Number(si.value);
-        settings.setValue(s.id, v);
-        sv.textContent = round(v, s.step);
-      });
-      sl.appendChild(si); sl.appendChild(sv); kr.appendChild(sl);
-
-      var wrap = document.createElement('div');
-      wrap.appendChild(kr);
-      var native = document.createElement('div');
-      native.className = 'nss-native';
-      native.textContent = 'Native slider goes ' + s.nativeMin + '–' + s.nativeMax +
-        '. Default ' + s.def + '.';
-      wrap.appendChild(native);
-      return wrap;
+    function hidePanel() {
+      if (panelEl) { panelEl.remove(); panelEl = null; }
     }
-
-    function round(v, step) {
-      var decimals = (String(step).split('.')[1] || '').length;
-      return Number(v).toFixed(decimals);
-    }
-
-    function fill(inner) {
-      inner.textContent = '';
-
-      var settings = findSettings();
-      var g = findGame();
-
-      if (!g) {
-        inner.appendChild(h3('Set-up'));
-        if (patchState.patched) {
-          inner.appendChild(note('The patched game is in place but has not loaded yet. ' +
-            'Reload the page (Ctrl+Shift+R) and this will connect.'));
-        } else {
-          inner.appendChild(note(
-            'This needs the same one-off set-up as 1 Kill = 1 Stat Point - it writes a ' +
-            'patched copy of the game into the game\'s own cache so this mod can reach your ' +
-            'settings and stats. The page reloads once, then it is connected every time.' +
-            (patchState.cacheName ? '' : '\n\nThe cache is not there yet - load a match once, then come back.')));
-        }
-        if (patchState.error) inner.appendChild(note('Last attempt: ' + patchState.error));
-
-        var setupRow = document.createElement('div');
-        setupRow.className = 'nss-setup-row';
-        setupRow.appendChild(button(patchState.patched ? 'Reload now' : 'Enable', function () {
-          if (patchState.patched) { location.reload(); return; }
-          enablePatch().then(function () { location.reload(); }).catch(function (e) {
-            patchState.error = e.message;
-            refresh();
-          });
-        }));
-        setupRow.appendChild(button('Undo', function () {
-          disablePatch().then(function () { location.reload(); }).catch(function (e) {
-            patchState.error = e.message;
-            refresh();
-          });
-        }));
-        inner.appendChild(setupRow);
-        return;
-      }
-
-      if (settings) {
-        inner.appendChild(h3('Extended Settings'));
-        inner.appendChild(note('Same settings the game already has - just a wider dial. ' +
-          'Writes straight through the game\'s own settings, so they stick like any other change.'));
-        SETTINGS.forEach(function (s) { inner.appendChild(settingRow(s, settings)); });
-      }
-
-      inner.appendChild(h3('Stats'));
+    function renderPanel() {
+      if (!panelEl) return;
       var p = findPlayer();
-      if (!p) {
-        inner.appendChild(note('No player found yet - spawn into a match.'));
-      } else {
-        var kills = p.scoreKills || 0, deaths = p.scoreDeaths || 0, flags = p.scoreFlags || 0;
+      var html = '';
+      if (p) {
+        var kills = p.scoreKills || 0, deaths = p.scoreDeaths || 0;
         var kd = deaths > 0 ? (kills / deaths).toFixed(2) : (kills > 0 ? kills.toFixed(2) : '0.00');
-        inner.appendChild(note('This match'));
-        inner.appendChild(statRow('Kills', kills));
-        inner.appendChild(statRow('Deaths', deaths));
-        inner.appendChild(statRow('Flags', flags));
-        inner.appendChild(statRow('K/D', kd));
-        inner.appendChild(statRow('Score', p.scoreTotal || 0));
-        if (typeof p.elo === 'number') inner.appendChild(statRow('Elo', Math.round(p.elo)));
-        inner.appendChild(statRow('Ping', Math.round(p.ping || 0) + 'ms'));
-        inner.appendChild(statRow('FPS', fps));
+        html += '<div class="nss-head">This match</div>';
+        html += panelRow('Kills', kills) + panelRow('Deaths', deaths) +
+          panelRow('Flags', p.scoreFlags || 0) + panelRow('K/D', kd) +
+          panelRow('Ping', Math.round(p.ping || 0) + 'ms') + panelRow('FPS', fps);
+      } else {
+        html += '<div class="nss-head">This match</div><div class="nss-row"><span>Not in a match</span></div>';
       }
-
-      var totals = liveTotals();
-      var totalKD = totals.deaths > 0 ? (totals.kills / totals.deaths).toFixed(2) :
+      var totals = liveSessionTotals();
+      var sKd = totals.deaths > 0 ? (totals.kills / totals.deaths).toFixed(2) :
         (totals.kills > 0 ? totals.kills.toFixed(2) : '0.00');
-      inner.appendChild(note('This session - ' + session.matches + ' match' +
-        (session.matches === 1 ? '' : 'es') + ' so far'));
-      inner.appendChild(statRow('Kills', totals.kills));
-      inner.appendChild(statRow('Deaths', totals.deaths));
-      inner.appendChild(statRow('Flags', totals.flags));
-      inner.appendChild(statRow('K/D', totalKD));
-
-      var resetRow = document.createElement('div');
-      resetRow.style.cssText = 'display:flex; gap:8px; margin-top:8px;';
-      resetRow.appendChild(button('Reset session', function () {
-        resetSession();
-        refresh();
-      }));
-      inner.appendChild(resetRow);
+      html += '<div class="nss-head">Session (' + session.matches + ' match' +
+        (session.matches === 1 ? '' : 'es') + ')</div>';
+      html += panelRow('Kills', totals.kills) + panelRow('Deaths', totals.deaths) +
+        panelRow('K/D', sKd);
+      panelEl.innerHTML = html;
     }
+    setInterval(function () { if (panelEl) renderPanel(); }, 400);
 
-    var dialogEl = null, curtainEl = null, bodyEl = null;
-
-    function refresh() {
-      if (!bodyEl) return;
-      fill(bodyEl);
-      bodyEl.querySelectorAll('button, input, select').forEach(function (el) { el.tabIndex = -1; });
+    /** Hook the game's own Tab binding the moment the game exists. */
+    var hooked = false;
+    function hookTabPanel() {
+      if (hooked) return;
+      var g = findGame();
+      var key = g && g.input && typeof g.input.getKey === 'function' ? g.input.getKey('playerList') : null;
+      if (!key) return;
+      key.onPressedDown(showPanel);
+      key.onPressedUp(hidePanel);
+      hooked = true;
     }
-    setInterval(refresh, 1000);   // keep stats/fps live while the tab is open
+    setInterval(hookTabPanel, 500);
 
-    function closeDialog() {
-      bodyEl = null;
-      if (dialogEl && dialogEl.isConnected) dialogEl.remove();
-      if (curtainEl && curtainEl.isConnected) curtainEl.remove();
-      dialogEl = null; curtainEl = null;
-    }
-
-    function openDialog() {
-      if (dialogEl && dialogEl.isConnected) return;
-      var host = document.getElementById('gameWrapper') || document.body;
-
-      curtainEl = document.createElement('div');
-      curtainEl.className = 'dialogCurtain fullScreen';
-      curtainEl.style.zIndex = '99';
-      curtainEl.addEventListener('click', closeDialog);
-      host.appendChild(curtainEl);
-
-      dialogEl = document.createElement('div');
-      dialogEl.className = 'dialog wrinkledPaper';
-      dialogEl.id = 'nss-dialog';
-      dialogEl.style.setProperty('--wrinkled-paper-seed', seed());
-      dialogEl.style.zIndex = '100';
-
-      var title = document.createElement('h2');
-      title.className = 'dialogTitle blueNight';
-      title.textContent = 'Settings & Stats';
-      dialogEl.appendChild(title);
-
-      var list = document.createElement('div');
-      list.className = 'settings-list';
-      bodyEl = document.createElement('div');
-      fill(bodyEl);
-      bodyEl.querySelectorAll('button, input, select').forEach(function (el) { el.tabIndex = -1; });
-      list.appendChild(bodyEl);
-      dialogEl.appendChild(list);
-
-      var btns = document.createElement('div');
-      btns.className = 'dialogButtonsContainer';
-      btns.appendChild(button('Done', closeDialog));
-      dialogEl.appendChild(btns);
-
-      ['keydown', 'keyup', 'keypress'].forEach(function (t) {
-        dialogEl.addEventListener(t, function (e) { e.stopPropagation(); });
-      });
-      if (document.pointerLockElement) document.exitPointerLock();
-
-      host.appendChild(dialogEl);
-    }
-
-    function injectMenuButton() {
-      var bar = document.querySelector('.menu-buttons-container');
-      if (!bar || bar.querySelector('#nss-menu-button')) return;
-
-      var c = document.createElement('div');
-      c.className = 'main-menu-button-container';
-      c.id = 'nss-menu-button';
-
-      var b = document.createElement('button');
-      b.className = 'wrinkledPaper main-menu-button';
-      b.setAttribute('aria-label', 'Settings & Stats');
-      // Never a Tab-navigation stop - the game silently drops every keydown
-      // while any BUTTON/INPUT/SELECT has focus (its own inputHasFocus()
-      // check), so this button must never be where Tab's default focus
-      // cycling can land while you're actually playing.
-      b.tabIndex = -1;
-      b.style.setProperty('--wrinkled-paper-seed', seed());
-
-      var img = document.createElement('div');
-      img.className = 'buttonImage';
-      img.style.backgroundImage = 'url("' + ICON_URL + '")';
-      img.style.backgroundSize = '90%';
-      b.appendChild(img);
-
-      var l = document.createElement('div');
-      l.className = 'main-menu-button-text whiteBigText blueNight';
-      l.setAttribute('aria-hidden', 'true');
-      l.textContent = 'Settings & Stats';
-
-      c.appendChild(b); c.appendChild(l);
-      b.addEventListener('click', function (e) {
-        e.preventDefault(); e.stopPropagation();
-        if (dialogEl && dialogEl.isConnected) closeDialog(); else openDialog();
-      });
-
-      var sibs = Array.prototype.slice.call(bar.querySelectorAll('.main-menu-button-container'));
-      var anchor = sibs.filter(function (x) {
-        var t = (x.textContent || '').trim();
-        return t === 'Crosshair' || t === 'Health' || t === 'Settings' || t === 'Hotkeys' ||
-               t === '1 Kill = 1 Stat Point' || t === 'Target Practice';
-      }).pop();
-      if (anchor && anchor.nextSibling) bar.insertBefore(c, anchor.nextSibling);
-      else bar.appendChild(c);
-    }
-
-    injectMenuButton();
-    setInterval(injectMenuButton, 1000);
-
-    window.addEventListener('keydown', function (e) {
-      if (e.code === 'Escape' && dialogEl && dialogEl.isConnected) {
-        e.preventDefault(); e.stopPropagation(); closeDialog();
-      }
-    }, true);
+    watchGameDialogs();
 
     PAGE.NarrowSettingsStats = window.NarrowSettingsStats = {
-      open: openDialog,
       get player() { return findPlayer(); },
-      get settings() { return findSettings(); },
       get session() { return session; },
-      resetSession: resetSession,
-      patchState: patchState,
-      enable: enablePatch,
-      disable: disablePatch,
-      check: checkPatched
+      resetSession: function () {
+        session = { kills: 0, deaths: 0, flags: 0, matches: 1 };
+        baseline = null;
+        saveSession();
+      },
+      patchState: patchState
     };
 
     console.log('[Settings & Stats] ready. Patched copy in cache:', patchState.patched);
