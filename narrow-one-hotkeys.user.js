@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hotkey Editor
 // @namespace    narrowone-hotkeys
-// @version      2.1.2
+// @version      2.1.3
 // @description  Rebind the game's own controls, plus menu shortcuts like Shop and Settings that never had a key at all, plus the toggle keys of whichever other Narrow One mods you have installed. Adds a Hotkeys tab to the main menu.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -874,6 +874,30 @@
       var tag = t.tagName.toLowerCase();
       return tag === 'input' || tag === 'textarea' || t.isContentEditable;
     }
+
+    /**
+     * The deeper reason Tab specifically breaks every control - not just
+     * ours, the game's own buttons too.
+     *
+     * The game only calls e.preventDefault() on Tab as a side effect of
+     * Tab being bound to something in its own registry (Scoreboard, by
+     * default) - see setKeyCodePressed's needsPreventDefault. Rebind that
+     * action away from Tab - or unbind it - and nothing calls
+     * preventDefault() on Tab any more. Its default browser behaviour (move
+     * focus to the next focusable element) fires unsuppressed, and it does
+     * not stop at elements this mod controls - the game's OWN native
+     * buttons (Shop, Settings, ...) are real <button> elements too, and
+     * tabIndex=-1 can only be added to ours, not theirs. Land on one of
+     * those and inputHasFocus() is true regardless of whose button it is.
+     *
+     * This restores that suppression unconditionally, so it can never
+     * depend on what Tab happens to be bound to.
+     */
+    window.addEventListener('keydown', function (e) {
+      if (e.code !== 'Tab') return;
+      if (typingElsewhere(e)) return;   // let it move between real form fields
+      e.preventDefault();
+    }, true);
 
     // Fires the menu-shortcut actions (Shop, Settings, Maps, ...) - the
     // mod-toggle actions need nothing here, each of those mods already
