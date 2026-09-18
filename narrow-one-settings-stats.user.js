@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.0.1
+// @version      2.1.0
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -261,6 +261,56 @@
       return player;
     }
 
+    /**
+     * Every way a point can land, straight from the bundle's own score-type
+     * table - the id the server tags each point event with, and the label
+     * it already uses on its own end-of-round overview:
+     *
+     *   Xi.set(10, {text:"Headshot", overviewText:"Headshots", ...})
+     *
+     * so this can't drift out of sync with what the game actually calls
+     * these, or miss one it adds later without me noticing.
+     */
+    var SCORE_TYPES = [
+      [1, 'Kills'], [2, 'Assists'], [3, 'Carrier Kills'], [4, 'Flag Grabs'],
+      [5, 'Flag Carry'], [6, 'Flag Captures'], [7, 'Carrier Assist'],
+      [8, 'Win Bonus'], [9, 'Flag Return'], [10, 'Headshots'],
+      [11, 'Long Range Hits'], [12, 'Capture Assists'], [13, 'On the Hill']
+    ];
+
+    /**
+     * The live match object - not the player, not po() itself. Everything
+     * below comes straight off it:
+     *
+     *   this.trackedMyPlayerScores = new Map   // id -> points earned so far
+     *   this.gameEndReceivedCoins = 0          // set once the server sends
+     *                                          // end-of-round rewards
+     *
+     * Both update on their own as the match (and the round-end handshake)
+     * happen - nothing here has to poll the server itself.
+     */
+    function findActiveGame() {
+      var g = findGame();
+      var ag = g && g.gameManager && g.gameManager.activeGame;
+      return (ag && ag.trackedMyPlayerScores instanceof Map) ? ag : null;
+    }
+
+    function pointBreakdown() {
+      var ag = findActiveGame();
+      if (!ag) return [];
+      var rows = [];
+      SCORE_TYPES.forEach(function (pair) {
+        var pts = ag.trackedMyPlayerScores.get(pair[0]);
+        if (pts) rows.push([pair[1], pts]);
+      });
+      return rows;
+    }
+
+    function coinsEarned() {
+      var ag = findActiveGame();
+      return ag ? (ag.gameEndReceivedCoins || 0) : 0;
+    }
+
     /* ================================================================ *
      * 1. Widen the native settings sliders in place
      * ================================================================ */
@@ -511,6 +561,13 @@
       } else {
         html += '<div class="nss-head">This match</div><div class="nss-row"><span>Not in a match</span></div>';
       }
+
+      var breakdown = pointBreakdown();
+      if (breakdown.length) {
+        html += '<div class="nss-head">Points</div>';
+        breakdown.forEach(function (row) { html += panelRow(row[0], row[1]); });
+      }
+
       var totals = liveSessionTotals();
       var sKd = totals.deaths > 0 ? (totals.kills / totals.deaths).toFixed(2) :
         (totals.kills > 0 ? totals.kills.toFixed(2) : '0.00');
@@ -518,6 +575,13 @@
         (session.matches === 1 ? '' : 'es') + ')</div>';
       html += panelRow('Kills', totals.kills) + panelRow('Deaths', totals.deaths) +
         panelRow('K/D', sKd);
+
+      // Zero/blank until the server actually sends round-end rewards - a
+      // number here before then would just be last round's, or made up.
+      var coins = coinsEarned();
+      html += '<div class="nss-head">Coins</div>' +
+        panelRow('This round', coins > 0 ? coins : '-');
+
       panelEl.innerHTML = html;
     }
     setInterval(function () { if (panelEl) renderPanel(); }, 400);

@@ -97,9 +97,12 @@ this adds a K/D row plus a running session block (kills/deaths/flags for
 this browser session, carried across matches) right into that same panel.
 
 **Hold Tab:** while the scoreboard is up, a small panel shows this match's
-kills/deaths/flags/K-D/ping/fps plus the running session, for exactly as
-long as Tab is held - hooked into the game's own Tab binding, not a
-separate toggle.
+kills/deaths/flags/K-D/ping/fps, a live breakdown of every way you've
+scored a point this match (kills, headshots, flag captures, assists, ... -
+the game's own scoring categories, not a guess), the running session, and
+coins earned this round once the server actually sends them at round end -
+for exactly as long as Tab is held, hooked into the game's own Tab
+binding, not a separate toggle.
 
 - Applies its own one-off cache patch automatically the first time the
   game's cache exists (play one round) - no button to press, just one
