@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.0.0
+// @version      2.0.1
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -311,35 +311,53 @@
       return { el: n, valueEl: r };
     }
 
+    function ratio(kills, deaths) {
+      return deaths > 0 ? (kills / deaths).toFixed(2) : (kills > 0 ? kills.toFixed(2) : '0.00');
+    }
+
+    /**
+     * Rows get built once, then kept live for as long as the dialog stays
+     * open - two separate reasons the old one-shot version went stale:
+     *
+     *  - the game kicks off profileState.fetchCurrentData() in this same
+     *    dialog's own constructor, and that fetch is still in flight the
+     *    instant our MutationObserver callback runs, so reading
+     *    profileState.stats immediately mostly caught it before the real
+     *    numbers had arrived.
+     *  - the session totals are genuinely live and meant to move while you
+     *    watch, particularly if this got opened mid-match.
+     */
     function enrichProfileDialog(dialog) {
       var statsEl = dialog.querySelector('.profile-stats');
       if (!statsEl || statsEl.dataset.nssEnriched) return;
       statsEl.dataset.nssEnriched = '1';
 
-      var g = findGame();
-      var stats = (g && g.profileState && g.profileState.stats) || {};
-      var kills = Number(stats.kills) || 0;
-      var deaths = Number(stats.deaths) || 0;
-      var kd = deaths > 0 ? (kills / deaths).toFixed(2) : (kills > 0 ? kills.toFixed(2) : '0.00');
-
       var kdRow = profileStatRow('kills', 'K/D');
-      kdRow.valueEl.textContent = kd;
       statsEl.appendChild(kdRow.el);
 
-      var totals = liveSessionTotals();
-      var sessionKd = totals.deaths > 0 ? (totals.kills / totals.deaths).toFixed(2) :
-        (totals.kills > 0 ? totals.kills.toFixed(2) : '0.00');
+      var sessionRows = {
+        kills: profileStatRow('kills', 'Session Kills'),
+        deaths: profileStatRow('kills', 'Session Deaths'),
+        flags: profileStatRow('flagsCaptured', 'Session Flags'),
+        kd: profileStatRow('kills', 'Session K/D')
+      };
+      Object.keys(sessionRows).forEach(function (k) { statsEl.appendChild(sessionRows[k].el); });
 
-      [
-        ['kills', 'Session Kills', totals.kills],
-        ['deaths', 'Session Deaths', totals.deaths],
-        ['flagsCaptured', 'Session Flags', totals.flags],
-        ['kills', 'Session K/D', sessionKd]
-      ].forEach(function (row) {
-        var r = profileStatRow(row[0], row[1]);
-        r.valueEl.textContent = row[2];
-        statsEl.appendChild(r.el);
-      });
+      function update() {
+        if (!statsEl.isConnected) { clearInterval(timer); return; }
+
+        var g = findGame();
+        var stats = (g && g.profileState && g.profileState.stats) || {};
+        kdRow.valueEl.textContent = ratio(Number(stats.kills) || 0, Number(stats.deaths) || 0);
+
+        var totals = liveSessionTotals();
+        sessionRows.kills.valueEl.textContent = totals.kills;
+        sessionRows.deaths.valueEl.textContent = totals.deaths;
+        sessionRows.flags.valueEl.textContent = totals.flags;
+        sessionRows.kd.valueEl.textContent = ratio(totals.kills, totals.deaths);
+      }
+      update();
+      var timer = setInterval(update, 500);
     }
 
     /* ================================================================ *
