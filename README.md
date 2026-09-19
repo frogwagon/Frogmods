@@ -136,6 +136,9 @@ game wasn't willing to show you.
 
 - **Z / X** previous / next player, **C** change view (chase, first person,
   arrow cam), **V** back to free camera - all rebindable in Hotkey Editor.
+- First person hides the watched player's body but keeps the weapon they are
+  holding, so you see their real bow or melee weapon, and hides your own
+  weapon so it is not drawn over the view.
 - Arrow cam rides the locked player's latest arrow and stays on it for a
   moment after it lands.
 - Needs "Fly when spectating" on (it is by default) and the same one-off cache

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Spectator Cam
 // @namespace    narrowone-spectator-cam
-// @version      1.0.0
+// @version      1.1.0
 // @description  While you're spectating a Narrow One match: lock onto a player (chase or first person) and ride their arrows, on top of the game's own free fly. Does nothing while you're playing.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -30,6 +30,10 @@
  * ignored and the camera is left completely alone. Spectators see the whole
  * match by design, so this shows nothing the game wasn't already willing to
  * show you; a player can't use it to scout a round they're in.
+ *
+ * First person also hides the watched player's body (keeping the weapon they
+ * are holding, so you see their bow or melee weapon) and hides your own
+ * weapon, which the game would otherwise draw in front of the camera.
  *
  * Camera: po().cam is the camera controller, and po().cam.cam is the
  * three.js camera. The controller's loop() runs once a frame before
@@ -293,21 +297,50 @@
       return null;
     }
 
-    /** Where an arrow is right now: the head of its recorded flight path. */
+    /**
+     * Where an arrow is right now. Each frame the arrow appends its current
+     * point to travelledPositions, so the last entry is where it is; prevPos
+     * and startPos are only fallbacks for its very first frame.
+     */
     function arrowPos(a) {
       var trail = a && a.travelledPositions;
-      var p = (a && a.pos) || (trail && trail.length ? trail[trail.length - 1] : null) || (a && a.prevPos) || (a && a.startPos);
+      var p = (trail && trail.length ? trail[trail.length - 1] : null) || (a && a.prevPos) || (a && a.startPos);
       return p && typeof p.x === 'number' ? { x: p.x, y: p.y, z: p.z } : null;
     }
 
-    /** The newest arrow this player has in the air. */
-    function latestArrowOf(pl) {
+    /** Which way it's travelling: lookDirection is updated every frame (dir is only the launch direction). */
+    function arrowDir(a) {
+      var d = (a && a.lookDirection && (a.lookDirection.x || a.lookDirection.y || a.lookDirection.z)) ? a.lookDirection : (a && a.dir);
+      return d && typeof d.x === 'number' ? d : null;
+    }
+
+    /**
+     * The newest arrow this player has in flight.
+     *
+     * The arrow manager keeps arrows as a Map OF Maps - one inner Map per
+     * shooter - not a flat Map:
+     *
+     *   destructor() { for (const t of this.arrows.values()) for (const e of t.values()) e.d... }
+     *
+     * The first version treated it as flat, matched nothing, and the arrow
+     * view never engaged. A flat Map is still handled in case that changes.
+     * Landed arrows carry didHitWorld / didHitPlayer, so those, not a made-up
+     * flag, say whether one is still flying.
+     */
+    function eachArrow(cb) {
       var ag = currentGame();
       var arrows = ag && ag.arrowManager && ag.arrowManager.arrows;
-      if (!(arrows instanceof Map)) return null;
+      if (!(arrows instanceof Map)) return;
+      arrows.forEach(function (v) {
+        if (v instanceof Map) v.forEach(cb);
+        else cb(v);
+      });
+    }
+
+    function latestArrowOf(pl) {
       var best = null;
-      arrows.forEach(function (a) {
-        if (a && a.shotBy === pl && !a.consumed) best = a;
+      eachArrow(function (a) {
+        if (a && a.shotBy === pl && !a.didHitWorld && !a.didHitPlayer && !a.consumed) best = a;
       });
       return best;
     }
@@ -317,7 +350,7 @@
     var state = { target: null, mode: 0, lastArrow: null, lastArrowAt: 0 };
     var ARROW_LINGER_MS = 1500;   // keep riding an arrow a moment after it lands
 
-    function release() { state.target = null; state.lastArrow = null; }
+    function release() { state.target = null; state.lastArrow = null; restoreVisuals(); }
 
     function cycle(dir) {
       var list = targets();
@@ -343,8 +376,9 @@
         if (a) { state.lastArrow = a; state.lastArrowAt = now; }
         var arrow = a || (state.lastArrow && now - state.lastArrowAt < ARROW_LINGER_MS ? state.lastArrow : null);
         var ap = arrow && arrowPos(arrow);
-        if (ap && arrow.dir) {
-          var d = arrow.dir, len = Math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z) || 1;
+        var d = arrow && arrowDir(arrow);
+        if (ap && d) {
+          var len = Math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z) || 1;
           var dx = d.x / len, dy = d.y / len, dz = d.z / len;
           return {
             pos: { x: ap.x - dx * 2.5, y: ap.y - dy * 2.5 + 0.6, z: ap.z - dz * 2.5 },
@@ -356,7 +390,7 @@
 
       if (mode === 'First person') {
         var q = viewQuat(pl);
-        if (q) return { pos: eyeOf(pl), quat: q };
+        if (q) return { pos: eyeOf(pl), quat: q, firstPerson: true };
         mode = 'Chase';
       }
 
@@ -379,6 +413,96 @@
       if (typeof cam.updateMatrixWorld === 'function') cam.updateMatrixWorld();
     }
 
+    /* ---- what you see of the players ---- */
+
+    /**
+     * Two things to fix on top of moving the camera.
+     *
+     * 1. In first person you're looking out of their head, so their own body
+     *    was in the way. The player's model hangs off `obj` (the game itself
+     *    switches obj.visible for the local player in first person), and what
+     *    they're holding is separate - each weapon is a "holding handler"
+     *    with its own holdingObject, parented to a hand bone. Hiding the whole
+     *    of `obj` would take the weapon with it, so instead every mesh that is
+     *    NOT inside a holdingObject is hidden and the weapon is left alone -
+     *    which is what shows you their bow or melee weapon, the real one they
+     *    have out, rather than yours.
+     *
+     * 2. Your own weapon. In first person the game draws yours in front of
+     *    the camera, so it sat on top of the view. A weapon's placement is
+     *    decided by player.useFirstPersonHoldingHandlers (camera when true,
+     *    hand bone when false), re-applied by handler.useFirstPersonUpdated().
+     *    Your own model is hidden in first person, so a weapon put back on
+     *    your hand bone is invisible. The game recalculates that flag on
+     *    certain events, so it's re-checked every frame while you're watching
+     *    someone, and handed back to the game's own updateUseFirstPerson-
+     *    HoldingHandlers() when you stop.
+     */
+    var hidden = { target: null, meshes: [] };   // meshes: [mesh, wasVisible]
+    var ownWeaponHidden = null;                  // the player whose weapon we moved
+
+    function handlersOf(pl) {
+      var h = pl && pl.holdingHandlers;
+      return h && typeof h[Symbol.iterator] === 'function' ? Array.from(h) : [];
+    }
+
+    function insideAny(node, roots) {
+      for (var n = node; n; n = n.parent) if (roots.indexOf(n) !== -1) return true;
+      return false;
+    }
+
+    function hideBody(pl) {
+      if (hidden.target === pl) return;
+      restoreBody();
+      if (!pl || !pl.obj || typeof pl.obj.traverse !== 'function') return;
+
+      var weapons = handlersOf(pl).map(function (h) { return h.holdingObject; }).filter(Boolean);
+      var saved = [];
+      pl.obj.traverse(function (node) {
+        if ((node.isMesh || node.isSkinnedMesh) && !insideAny(node, weapons)) {
+          saved.push([node, node.visible]);
+          node.visible = false;
+        }
+      });
+      hidden = { target: pl, meshes: saved };
+    }
+
+    function restoreBody() {
+      hidden.meshes.forEach(function (pair) { pair[0].visible = pair[1]; });
+      hidden = { target: null, meshes: [] };
+    }
+
+    function hideOwnWeapon(self) {
+      if (!self) return;
+      if (self.useFirstPersonHoldingHandlers) {
+        self.useFirstPersonHoldingHandlers = false;
+        handlersOf(self).forEach(function (h) {
+          if (typeof h.useFirstPersonUpdated === 'function') h.useFirstPersonUpdated();
+        });
+      }
+      ownWeaponHidden = self;
+    }
+
+    function restoreOwnWeapon() {
+      var self = ownWeaponHidden;
+      ownWeaponHidden = null;
+      if (self && typeof self.updateUseFirstPersonHoldingHandlers === 'function') {
+        try { self.updateUseFirstPersonHoldingHandlers(); } catch (e) {}
+      }
+    }
+
+    function restoreVisuals() {
+      if (hidden.target) restoreBody();
+      if (ownWeaponHidden) restoreOwnWeapon();
+    }
+
+    /** Called every frame while locked on. `shot` says whether this is true first person. */
+    function syncVisuals(self, shot) {
+      hideOwnWeapon(self);
+      if (shot && shot.firstPerson) hideBody(state.target);
+      else restoreBody();
+    }
+
     /* ---- hooking the game's camera ---- */
 
     var hookedCtl = null;
@@ -394,7 +518,7 @@
           if (state.target && !isSpectator(self)) release();   // no longer spectating
           if (state.target) {
             var shot = computeShot(Date.now());
-            if (shot) applyShot(ctl.cam, shot);
+            if (shot) { applyShot(ctl.cam, shot); syncVisuals(self, shot); }
             else release();                                    // target died or left
           }
         } catch (e) {}
