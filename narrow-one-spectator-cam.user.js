@@ -251,7 +251,9 @@
       var ag = currentGame(), self = me(), list = [];
       if (!ag || !self) return list;
       ag.players.forEach(function (pl) {
-        if (!pl || pl === self || pl.dead || isSpectator(pl) || !pl.pos) return;
+        // You're a spectator here, so your own team id IS the spectator team:
+        // anyone sharing it is another spectator, flying or not.
+        if (!pl || pl === self || pl.dead || isSpectator(pl) || pl.teamId === self.teamId || !pl.pos) return;
         list.push(pl);
       });
       list.sort(function (a, b) {

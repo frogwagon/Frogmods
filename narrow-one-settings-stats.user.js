@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.5.2
+// @version      2.5.3
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -271,14 +271,74 @@
     }
 
     /**
-     * Spectators are on their own extra team, so a match with them has three
-     * team ids rather than two. The game's own definition of one is whoever
-     * updateFly() switched flight on for (rigidBody.fly) - that is what marks
-     * them here, so they are never labelled as a real team or given a tag.
+     * Which team id is the spectators'.
+     *
+     * The game gives a match three team ids - two real teams and a spectator
+     * one - and marks a spectator only with flight, which the server turns on
+     * for other people's players on its own schedule, so flight alone can miss
+     * them (they then showed up tagged and listed as a third "team"). Two
+     * things pin the team down properly:
+     *
+     *  - any player who IS flying tells you the team id outright, and
+     *  - the scoreboard keeps a coloured element per team, indexed by team id
+     *    (teamEls[id].containerEl carries --team-bg-color-light), and the
+     *    spectator team is the green one.
+     *
+     * Once the id is known the whole team is excluded, flying or not.
      */
-    function isSpectatorPlayer(pl) {
-      return !!(pl && pl.rigidBody && pl.rigidBody.fly === true && !pl.noclip);
+    var specCache = { game: null, at: 0, id: null };
+    function spectatorTeamId() {
+      var ag = currentGame();
+      if (!ag) return null;
+      var now = Date.now();
+      if (specCache.game === ag && now - specCache.at < 1000) return specCache.id;
+
+      var id = null;
+      ag.players.forEach(function (pl) {
+        if (id === null && pl && pl.rigidBody && pl.rigidBody.fly === true && !pl.noclip) id = pl.teamId;
+      });
+      if (id === null) {
+        var colors = teamColorMap(ag);
+        Object.keys(colors).forEach(function (k) {
+          if (id === null && colorName(colors[k]) === 'Green') id = Number(k);
+        });
+      }
+      specCache = { game: ag, at: now, id: id };
+      return id;
     }
+
+    function isSpectatorPlayer(pl) {
+      if (!pl) return false;
+      if (pl.rigidBody && pl.rigidBody.fly === true && !pl.noclip) return true;
+      var id = spectatorTeamId();
+      return id !== null && pl.teamId === id;
+    }
+
+    /** teamId -> [r,g,b], read from the scoreboard's own per-team elements. */
+    function teamColorMap(ag) {
+      var map = {};
+      try {
+        var els = ag.playersListDialog && ag.playersListDialog.teamEls;
+        if (els && typeof els.forEach === 'function') {
+          els.forEach(function (t, id) {
+            var css = t && t.containerEl && t.containerEl.style &&
+              t.containerEl.style.getPropertyValue('--team-bg-color-light');
+            var rgb = parseRgb(String(css || '').trim());
+            if (rgb) map[id] = rgb;
+          });
+        }
+      } catch (e) {}
+      return map;
+    }
+
+    function colorName(rgb) {
+      var r = rgb[0], g = rgb[1], b = rgb[2];
+      if (r > g * 1.15 && r > b * 1.15) return 'Red';
+      if (b > r * 1.15 && b > g * 1.15) return 'Blue';
+      if (g > r * 1.15 && g > b * 1.15) return 'Green';
+      return null;
+    }
+
 
     var player = null, playerGame = null;
     function findPlayer() {
@@ -966,21 +1026,52 @@
      * other number of teams there's nothing to infer, so it stays "Team N".
      */
     function parseRgb(css) {
-      var m = /^#([0-9a-f]{6})$/i.exec(css || '');
+      css = String(css || '').trim();
+      var m = /^#([0-9a-f]{6})$/i.exec(css);
       if (m) return [parseInt(m[1].slice(0, 2), 16), parseInt(m[1].slice(2, 4), 16), parseInt(m[1].slice(4, 6), 16)];
-      m = /rgba?\(\s*(\d+)[ ,]+(\d+)[ ,]+(\d+)/i.exec(css || '');
-      return m ? [+m[1], +m[2], +m[3]] : null;
+      m = /rgba?\(\s*(\d+)[ ,]+(\d+)[ ,]+(\d+)/i.exec(css);
+      if (m) return [+m[1], +m[2], +m[3]];
+      m = /hsla?\(\s*([\d.]+)[ ,]+([\d.]+)%[ ,]+([\d.]+)%/i.exec(css);
+      if (m) {
+        var h = (+m[1] % 360) / 360, s = +m[2] / 100, l = +m[3] / 100;
+        var q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+        var f = function (t) {
+          t = (t + 1) % 1;
+          if (t < 1 / 6) return p + (q - p) * 6 * t;
+          if (t < 1 / 2) return q;
+          if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+          return p;
+        };
+        return [Math.round(f(h + 1 / 3) * 255), Math.round(f(h) * 255), Math.round(f(h - 1 / 3) * 255)];
+      }
+      return null;
     }
+
+    /**
+     * Name each team from its real colour - the scoreboard's own per-team
+     * elements carry it, so this works for red/blue/green alike and for any
+     * number of teams. If those can't be read it falls back to naming your
+     * own team from getMyTeamColor() and calling the other one the opposite.
+     */
     function teamNamer(teamIds) {
       var names = {};
       try {
-        var g = findGame();
-        var mine = g && g.gameManager && g.gameManager.getMyTeamColor && g.gameManager.getMyTeamColor();
-        var rgb = mine && mine.colors && parseRgb(mine.colors.cssColor);
-        if (rgb && teamIds.length === 2) {
-          var myName = rgb[0] > rgb[2] ? 'Red team' : 'Blue team';
-          var other = myName === 'Red team' ? 'Blue team' : 'Red team';
-          teamIds.forEach(function (id) { names[id] = (id === mine.myTeamId) ? myName : other; });
+        var ag = currentGame();
+        var colors = ag ? teamColorMap(ag) : {};
+        teamIds.forEach(function (id) {
+          var n = colors[id] && colorName(colors[id]);
+          if (n) names[id] = n + ' team';
+        });
+
+        if (teamIds.some(function (id) { return !names[id]; }) && teamIds.length === 2) {
+          var g = findGame();
+          var mine = g && g.gameManager && g.gameManager.getMyTeamColor && g.gameManager.getMyTeamColor();
+          var rgb = mine && mine.colors && parseRgb(mine.colors.cssColor);
+          if (rgb) {
+            var myName = rgb[0] > rgb[2] ? 'Red team' : 'Blue team';
+            var other = myName === 'Red team' ? 'Blue team' : 'Red team';
+            teamIds.forEach(function (id) { names[id] = (id === mine.myTeamId) ? myName : other; });
+          }
         }
       } catch (e) {}
       return function (id) { return names[id] || ('Team ' + id); };
