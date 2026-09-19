@@ -106,7 +106,7 @@ binding, not a separate toggle.
 
 **Name tags (Settings option):** "Name tags above players" is added under "Show ping and fps" in the native Settings dialog (off by default). The game has no in-world name tags, so this projects each player's position through the game's camera and draws a label. Teammates are always tagged; enemies (red-tinted) only while you can actually see them - each one is gated on the game's own wall raycast (the one that stops arrows), so a tag never appears through solid geometry, and if that test cannot run the tag stays hidden.
 
-**Scoreboard:** team headers read Red team / Blue team (named from your own team's colour, the only one the game exposes), each row has the player's avatar, and the weapon-switch bar keeps its normal grey.
+**Scoreboard:** team headers read Red team / Blue team (named from your own team's colour, the only one the game exposes), each row has the player's avatar (re-fetched every ~7 seconds while the panel is up, so a changed picture updates), and the weapon-switch bar keeps its normal grey.
 
 **FPS limit (Settings option):** an "FPS limit" slider under Quality. The game runs one frame per `frameCap` browser frames (a plain integer, default 1), so the slider changes that divisor live with no reload and the labels are your real display rate divided by it (144 Hz: 144 / 72 / 48 / 36 ...). Right end is Uncapped, which means as fast as your display refreshes - the browser hands out frames at the monitor's rate and no page can exceed it. The Tab panel's FPS now shows the game's actual frame rate.
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.5.0
+// @version      2.5.1
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -979,16 +979,41 @@
      * The url is only good while its reference is alive, so references are
      * kept per player rather than released after one render.
      */
+    var AVATAR_REFRESH_MS = 7000;   // re-fetched this often while the panel is up
     var avatarCache = new WeakMap();
+
+    /**
+     * Fetching once and keeping it forever meant a picture that hadn't loaded
+     * yet, or that a player later changed, never changed on the scoreboard.
+     * Now each entry is re-fetched once it's a few seconds old - on demand,
+     * only while the panel is actually showing, so there's no background
+     * work. The new picture is swapped in only once it has loaded (no flash
+     * of blank), and the old reference is released afterwards, the way the
+     * game's own scoreboard releases its own.
+     */
+    function loadAvatar(pl, entry) {
+      entry.fetchedAt = Date.now();
+      try {
+        var fresh = pl.getSmallAvatar().getBlobUrlReference();
+        Promise.resolve(fresh.getBlobUrl()).then(function (u) {
+          var old = entry.ref;
+          entry.url = u;
+          entry.ref = fresh;
+          if (old && old !== fresh && typeof old.destructor === 'function') {
+            try { old.destructor(); } catch (e) {}
+          }
+        }).catch(function () {});
+      } catch (e) {}
+    }
+
     function avatarStyle(pl) {
       var entry = avatarCache.get(pl);
       if (!entry) {
-        entry = { url: null, ref: null };
+        entry = { url: null, ref: null, fetchedAt: 0 };
         avatarCache.set(pl, entry);
-        try {
-          entry.ref = pl.getSmallAvatar().getBlobUrlReference();
-          Promise.resolve(entry.ref.getBlobUrl()).then(function (u) { entry.url = u; }).catch(function () {});
-        } catch (e) {}
+        loadAvatar(pl, entry);
+      } else if (Date.now() - entry.fetchedAt > AVATAR_REFRESH_MS) {
+        loadAvatar(pl, entry);
       }
       return entry.url ? ' style="background-image:url(&quot;' + entry.url + '&quot;)"' : '';
     }
