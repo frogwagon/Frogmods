@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.3.0
+// @version      2.4.0
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -445,11 +445,19 @@
      * label per teammate, placed by projecting their world position through
      * the game's own camera.
      *
-     * Teammates only, on purpose. A label is a DOM element, and DOM
-     * elements ignore walls - putting one over an enemy would show you
-     * exactly where they are through solid geometry, which is a wallhack
-     * however it's dressed up. Your own team is the case where that's just
-     * a name tag.
+     * Enemies get one too, but ONLY while you can actually see them. A label
+     * is a DOM element and DOM elements ignore walls - drawn naively it
+     * would show you exactly where an enemy is through solid geometry, which
+     * is a wallhack however it's dressed up. So every enemy tag is gated on
+     * a line-of-sight test using the game's own wall raycast, the same one
+     * it uses to stop arrows:
+     *
+     *   physics.getRayCastCache(from, to)          // build the ray
+     *   physics.rayCastMapColliders(ray, filter)   // first wall it hits
+     *
+     * If anything solid is between your eye and them, no tag. If the test
+     * can't run at all (no physics, no camera), the tag stays hidden rather
+     * than guessing - it fails closed. Teammates are always tagged.
      * ================================================================ */
 
     var TAGS_KEY = 'narrowone.settingsstats.nametags';
@@ -475,7 +483,7 @@
       row.dataset.nssTags = '1';
       var text = document.createElement('div');
       text.className = 'settings-item-text';
-      text.textContent = 'Name tags above teammates';
+      text.textContent = 'Name tags above players';
       row.appendChild(text);
       var box = document.createElement('input');
       box.type = 'checkbox';
@@ -526,6 +534,37 @@
     }
 
     var TAG_HEIGHT = 2.2;   // roughly a head above where a player's position sits
+    var SIGHT_POINTS = [1.7, 0.9];   // head and chest: seeing either one is seeing them
+
+    /** Which walls stop an arrow - the game's own filter, so they stop sight too. */
+    function blocksSight(hit) {
+      var c = hit && hit.collider;
+      return !!c && !c.ignoreArrows && !(c.excludeTeamId >= 0) &&
+        !(typeof c.isTriggerCollider === 'function' && c.isTriggerCollider());
+    }
+
+    /** Clear line from your eye to the player? Fails closed if it can't tell. */
+    function canSee(ag, cam, pl) {
+      try {
+        var physics = ag.physics;
+        if (!physics || typeof physics.getRayCastCache !== 'function' ||
+            typeof physics.rayCastMapColliders !== 'function') return false;
+        if (!pl.pos || typeof pl.pos.clone !== 'function' || !cam.position) return false;
+
+        var eye = cam.position.clone();
+        if (typeof cam.getWorldPosition === 'function') cam.getWorldPosition(eye);
+
+        for (var i = 0; i < SIGHT_POINTS.length; i++) {
+          var target = pl.pos.clone();
+          target.y += SIGHT_POINTS[i];
+          var ray = physics.getRayCastCache(eye, target);
+          if (!ray) return true;   // eye and target coincide - nothing between
+          if (!physics.rayCastMapColliders(ray, blocksSight)) return true;
+        }
+        return false;
+      } catch (e) { return false; }
+    }
+
     (function tagLoop() {
       requestAnimationFrame(tagLoop);
       if (!tagsOn()) { if (tagsEl) hideAllTags(); return; }
@@ -536,16 +575,19 @@
       var layer = tagLayer();
       var seen = new Set();
       ag.players.forEach(function (pl) {
-        if (!pl || pl === me || pl.teamId !== me.teamId || pl.dead) return;
+        if (!pl || pl === me || pl.dead) return;
+        var mate = pl.teamId === me.teamId;
         var pt = toScreen(pl.pos, cam, TAG_HEIGHT);
         if (!pt) return;
+        if (!mate && !canSee(ag, cam, pl)) return;   // enemies only while actually visible
         seen.add(pl);
         var el = tagEls.get(pl);
         if (!el) {
           el = document.createElement('div');
           el.style.cssText = 'position:absolute; transform:translate(-50%,-100%); white-space:nowrap; ' +
             'font:700 13px system-ui,sans-serif; color:#fff; padding:1px 6px; border-radius:6px; ' +
-            'background:rgba(0,0,0,.35); text-shadow:0 0 3px #000, 0 0 3px #000;';
+            'background:' + (mate ? 'rgba(0,0,0,.35)' : 'rgba(150,20,20,.5)') + '; ' +
+            'text-shadow:0 0 3px #000, 0 0 3px #000;';
           layer.appendChild(el);
           tagEls.set(pl, el);
         }
