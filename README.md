@@ -104,6 +104,10 @@ coins earned this round once the server actually sends them at round end -
 for exactly as long as Tab is held, hooked into the game's own Tab
 binding, not a separate toggle.
 
+**Name tags (Settings option):** "Name tags above teammates" is added under "Show ping and fps" in the native Settings dialog (off by default). The game has no in-world name tags, so this projects each living teammate's position through the game's camera and draws a label. Teammates only - a label ignores walls, so one over an enemy would be a wallhack.
+
+**Scoreboard:** team headers read Red team / Blue team (named from your own team's colour, the only one the game exposes), each row has the player's avatar, and the weapon-switch bar keeps its normal grey.
+
 **Tinted UI:** every grey panel in the game (Settings, Shop, profile,
 ...) is one shared paper style driven by a single CSS colour variable, so
 this swaps that variable for a half-strength dark tint - panels keep their borders, the game shows through, and it is not black,

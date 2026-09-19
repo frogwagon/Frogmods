@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.2.1
+// @version      2.3.0
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -251,13 +251,34 @@
 
     function hasScores(o) { return Object.prototype.hasOwnProperty.call(o, 'scoreKills'); }
 
-    var player = null;
-    function findPlayer() {
-      if (player && player.hasOwnership) return player;
+    /**
+     * The live match, and you in it - read straight off the path the game
+     * itself uses, not searched for.
+     *
+     * An earlier version walked the whole game object graph looking for the
+     * player flagged hasOwnership. In the real game that graph is huge (the
+     * whole three.js scene hangs off it), and the walk gives up long before
+     * it finds anyone - which is why "This match" and the session both sat
+     * at nothing. The scoreboard reads this same Map:
+     *
+     *   this.players = new Map      // on gameManager.activeGame
+     *   this.playersListDialog = new Ki(t, this.players, ...)
+     */
+    function currentGame() {
       var g = findGame();
-      if (!g) return null;
-      var hits = collectMatching(g, function (o) { return hasScores(o) && o.hasOwnership === true; }, 1);
-      player = hits.length ? hits[0] : null;
+      var ag = g && g.gameManager && g.gameManager.activeGame;
+      return (ag && ag.players instanceof Map) ? ag : null;
+    }
+
+    var player = null, playerGame = null;
+    function findPlayer() {
+      var ag = currentGame();
+      if (!ag) { player = null; playerGame = null; return null; }
+      if (player && playerGame === ag && player.hasOwnership) return player;
+      var me = null;
+      ag.players.forEach(function (pl) { if (!me && pl && pl.hasOwnership === true) me = pl; });
+      player = me;
+      playerGame = ag;
       return player;
     }
 
@@ -416,6 +437,128 @@
      * to strip its own group out of this exact dialog.
      * ================================================================ */
 
+    /* ================================================================ *
+     * Name tags above teammates - a setting in the native Settings dialog
+     *
+     * The game has no in-world name tags at all (playerName only ever
+     * feeds the scoreboard and squad lists), so this draws its own: a small
+     * label per teammate, placed by projecting their world position through
+     * the game's own camera.
+     *
+     * Teammates only, on purpose. A label is a DOM element, and DOM
+     * elements ignore walls - putting one over an enemy would show you
+     * exactly where they are through solid geometry, which is a wallhack
+     * however it's dressed up. Your own team is the case where that's just
+     * a name tag.
+     * ================================================================ */
+
+    var TAGS_KEY = 'narrowone.settingsstats.nametags';
+    function tagsOn() {
+      try { return localStorage.getItem(TAGS_KEY) === '1'; } catch (e) { return false; }
+    }
+    function setTags(on) {
+      try { localStorage.setItem(TAGS_KEY, on ? '1' : '0'); } catch (e) {}
+    }
+
+    /** A native-looking toggle row, added under "Show ping and fps". */
+    function addNameTagOption(dialog) {
+      var rows = dialog.querySelectorAll('.settings-item');
+      var anchor = null;
+      rows.forEach(function (row) {
+        var t = row.querySelector('.settings-item-text');
+        if (t && t.textContent.trim() === 'Show ping and fps') anchor = row;
+      });
+      if (!anchor || dialog.querySelector('[data-nss-tags]')) return;
+
+      var row = document.createElement('label');
+      row.className = 'settings-item';
+      row.dataset.nssTags = '1';
+      var text = document.createElement('div');
+      text.className = 'settings-item-text';
+      text.textContent = 'Name tags above teammates';
+      row.appendChild(text);
+      var box = document.createElement('input');
+      box.type = 'checkbox';
+      box.className = 'dialog-checkbox-input wrinkledPaper';
+      box.style.setProperty('--wrinkled-paper-seed', String(Math.floor(Math.random() * 99999)));
+      box.checked = tagsOn();
+      box.addEventListener('change', function () { setTags(box.checked); });
+      row.appendChild(box);
+      anchor.parentNode.insertBefore(row, anchor.nextSibling);
+    }
+
+    var camera = null, cameraTriedAt = 0;
+    function findCamera() {
+      if (camera && camera.projectionMatrix && camera.matrixWorldInverse) return camera;
+      var now = Date.now();
+      if (now - cameraTriedAt < 2000) return null;
+      cameraTriedAt = now;
+      var g = findGame();
+      if (!g) return null;
+      var hits = collectMatching(g, function (o) { return o.isPerspectiveCamera === true; }, 1);
+      camera = hits.length ? hits[0] : null;
+      return camera;
+    }
+
+    var tagsEl = null, tagEls = new Map();
+    function tagLayer() {
+      if (tagsEl && tagsEl.isConnected) return tagsEl;
+      tagsEl = document.createElement('div');
+      tagsEl.id = 'nss-tags';
+      tagsEl.style.cssText = 'position:fixed; left:0; top:0; width:100%; height:100%; ' +
+        'pointer-events:none; z-index:60; overflow:hidden;';
+      document.body.appendChild(tagsEl);
+      return tagsEl;
+    }
+    function hideAllTags() {
+      tagEls.forEach(function (el) { el.style.display = 'none'; });
+    }
+
+    /** World position -> screen pixels, or null if it's behind the camera. */
+    function toScreen(worldPos, cam, yOffset) {
+      if (!worldPos || typeof worldPos.clone !== 'function') return null;
+      var v = worldPos.clone();
+      v.y += yOffset;
+      v.project(cam);
+      if (!(v.z > -1 && v.z < 1)) return null;
+      if (Math.abs(v.x) > 1.1 || Math.abs(v.y) > 1.1) return null;
+      return { x: (v.x + 1) / 2 * window.innerWidth, y: (1 - v.y) / 2 * window.innerHeight };
+    }
+
+    var TAG_HEIGHT = 2.2;   // roughly a head above where a player's position sits
+    (function tagLoop() {
+      requestAnimationFrame(tagLoop);
+      if (!tagsOn()) { if (tagsEl) hideAllTags(); return; }
+
+      var ag = currentGame(), me = findPlayer(), cam = findCamera();
+      if (!ag || !me || !cam) { hideAllTags(); return; }
+
+      var layer = tagLayer();
+      var seen = new Set();
+      ag.players.forEach(function (pl) {
+        if (!pl || pl === me || pl.teamId !== me.teamId || pl.dead) return;
+        var pt = toScreen(pl.pos, cam, TAG_HEIGHT);
+        if (!pt) return;
+        seen.add(pl);
+        var el = tagEls.get(pl);
+        if (!el) {
+          el = document.createElement('div');
+          el.style.cssText = 'position:absolute; transform:translate(-50%,-100%); white-space:nowrap; ' +
+            'font:700 13px system-ui,sans-serif; color:#fff; padding:1px 6px; border-radius:6px; ' +
+            'background:rgba(0,0,0,.35); text-shadow:0 0 3px #000, 0 0 3px #000;';
+          layer.appendChild(el);
+          tagEls.set(pl, el);
+        }
+        if (el.textContent !== (pl.playerName || '')) el.textContent = pl.playerName || '';
+        el.style.display = 'block';
+        el.style.left = pt.x + 'px';
+        el.style.top = pt.y + 'px';
+      });
+      tagEls.forEach(function (el, pl) {
+        if (!seen.has(pl)) el.style.display = 'none';
+      });
+    })();
+
     var dialogWatcher = new MutationObserver(function (muts) {
       muts.forEach(function (m) {
         Array.prototype.forEach.call(m.addedNodes, function (node) {
@@ -423,6 +566,7 @@
           // Settle a tick - some dialogs finish building their rows just after insertion.
           setTimeout(function () {
             widenSettingsDialog(node);
+            addNameTagOption(node);
             enrichProfileDialog(node);
           }, 0);
         });
@@ -476,20 +620,35 @@
       return { kills: session.kills + mk, deaths: session.deaths + md, flags: session.flags + mf };
     }
 
+    /**
+     * A new match is a new game object, so that - not a CSS class showing up
+     * in the page - is what marks the boundary. Each tick remembers your last
+     * seen score; when the game object changes, that last score (minus where
+     * you started) is banked into the session before anything resets.
+     */
+    var trackedGame = null;
+    var lastSeen = null;
     setInterval(function () {
-      var inMatch = !!document.querySelector('.health-ui-bar-container');
-      if (inMatch && !sawHealthBar) {
-        bankCurrentMatch();
-        session.matches++;
-        player = null;
-        baseline = null;
-        saveSession();
-      }
-      sawHealthBar = inMatch;
+      var ag = currentGame();
+      var p = findPlayer();
 
-      if (inMatch && !baseline) {
-        var p = findPlayer();
-        if (p) baseline = { kills: p.scoreKills || 0, deaths: p.scoreDeaths || 0, flags: p.scoreFlags || 0 };
+      if (ag !== trackedGame) {
+        if (trackedGame && baseline && lastSeen) {
+          session.kills += Math.max(0, lastSeen.kills - baseline.kills);
+          session.deaths += Math.max(0, lastSeen.deaths - baseline.deaths);
+          session.flags += Math.max(0, lastSeen.flags - baseline.flags);
+          if (ag) session.matches++;
+          saveSession();
+        }
+        trackedGame = ag;
+        baseline = null;
+        lastSeen = null;
+      }
+
+      if (p) {
+        var now = { kills: p.scoreKills || 0, deaths: p.scoreDeaths || 0, flags: p.scoreFlags || 0 };
+        if (!baseline) baseline = now;
+        lastSeen = now;
       }
     }, 500);
 
@@ -534,6 +693,8 @@
       '#nss-panel th:first-child, #nss-panel td:first-child { text-align: left; }',
       '#nss-panel td { text-align: right; padding: 2px 6px; }',
       '#nss-panel tr.nss-me td { background: rgba(255,255,255,.14); }',
+      '#nss-panel .nss-av { display:inline-block; width:22px; height:22px; margin-right:8px; ' +
+        'vertical-align:middle; border-radius:50%; background: rgba(255,255,255,.15) center/cover no-repeat; }',
       '#nss-panel tr.nss-team td { opacity: .5; font-size: 11px; text-transform: uppercase; ' +
         'letter-spacing: .04em; text-align: left; padding-top: 8px; }',
       // While this panel is up it stands in for the game's own scoreboard.
@@ -562,6 +723,17 @@
       '  --default-text-color: #fff !important;',
       '}',
       '.dialog, .dialog * { text-shadow: 0 0 3px rgba(0,0,0,.95), 0 0 6px rgba(0,0,0,.7); }',
+      // The weapon-switch bar is in-match gameplay UI, not a menu - it keeps
+      // the game's own colours (the values the theme would have set).
+      'html.theme-dark .weapon-selection-dialog {',
+      '  --default-ui-bg-color: #454545 !important; --secondary-ui-bg-color: #5d5d5d !important;',
+      '  --container-ui-bg-color: #646464 !important; --default-text-color: #fff !important;',
+      '}',
+      'html:not(.theme-dark) .weapon-selection-dialog {',
+      '  --default-ui-bg-color: #fff !important; --secondary-ui-bg-color: #e1e1e1 !important;',
+      '  --container-ui-bg-color: #f1f1f1 !important; --default-text-color: #000 !important;',
+      '}',
+      '.weapon-selection-dialog, .weapon-selection-dialog * { text-shadow: none !important; }',
       'input.dialog-range-input[type=range], input.dialog-range-input[type=range]::-webkit-slider-thumb,',
       '.dialog-text-input, .dialog-checkbox-input {',
       '  --wrinkled-paper-color: rgba(140,140,140,.55) !important;',
@@ -617,26 +789,83 @@
     }
 
     /** The scoreboard's own job, so hiding the native one loses nothing. */
+    /**
+     * Team ids are just numbers; the game's own table of team colours is a
+     * module constant that isn't reachable. What IS reachable is the colour
+     * of YOUR team:
+     *
+     *   getMyTeamColor() { ... return { colors: A[teamId], myTeamId } }
+     *
+     * so your team is named from that colour (more red than blue -> Red),
+     * and in a two-team game the other one is simply the opposite. With any
+     * other number of teams there's nothing to infer, so it stays "Team N".
+     */
+    function parseRgb(css) {
+      var m = /^#([0-9a-f]{6})$/i.exec(css || '');
+      if (m) return [parseInt(m[1].slice(0, 2), 16), parseInt(m[1].slice(2, 4), 16), parseInt(m[1].slice(4, 6), 16)];
+      m = /rgba?\(\s*(\d+)[ ,]+(\d+)[ ,]+(\d+)/i.exec(css || '');
+      return m ? [+m[1], +m[2], +m[3]] : null;
+    }
+    function teamNamer(teamIds) {
+      var names = {};
+      try {
+        var g = findGame();
+        var mine = g && g.gameManager && g.gameManager.getMyTeamColor && g.gameManager.getMyTeamColor();
+        var rgb = mine && mine.colors && parseRgb(mine.colors.cssColor);
+        if (rgb && teamIds.length === 2) {
+          var myName = rgb[0] > rgb[2] ? 'Red team' : 'Blue team';
+          var other = myName === 'Red team' ? 'Blue team' : 'Red team';
+          teamIds.forEach(function (id) { names[id] = (id === mine.myTeamId) ? myName : other; });
+        }
+      } catch (e) {}
+      return function (id) { return names[id] || ('Team ' + id); };
+    }
+
+    /**
+     * Each player's small avatar, the same picture the scoreboard shows:
+     *
+     *   e.getSmallAvatar().getBlobUrlReference()  ->  .getBlobUrl()  (async)
+     *
+     * The url is only good while its reference is alive, so references are
+     * kept per player rather than released after one render.
+     */
+    var avatarCache = new WeakMap();
+    function avatarStyle(pl) {
+      var entry = avatarCache.get(pl);
+      if (!entry) {
+        entry = { url: null, ref: null };
+        avatarCache.set(pl, entry);
+        try {
+          entry.ref = pl.getSmallAvatar().getBlobUrlReference();
+          Promise.resolve(entry.ref.getBlobUrl()).then(function (u) { entry.url = u; }).catch(function () {});
+        } catch (e) {}
+      }
+      return entry.url ? ' style="background-image:url(&quot;' + entry.url + '&quot;)"' : '';
+    }
+
     function playersTable() {
-      var g = findGame();
-      var ag = g && g.gameManager && g.gameManager.activeGame;
-      if (!ag || !(ag.players instanceof Map)) return '<div class="nss-row"><span>No players yet</span></div>';
+      var ag = currentGame();
+      if (!ag) return '<div class="nss-row"><span>No players yet</span></div>';
 
       var list = [];
       ag.players.forEach(function (pl) { if (pl && typeof pl === 'object') list.push(pl); });
       list.sort(function (a, b) {
         return (a.teamId - b.teamId) || ((b.scoreTotal || 0) - (a.scoreTotal || 0));
       });
+      var ids = [];
+      list.forEach(function (pl) { if (ids.indexOf(pl.teamId) === -1) ids.push(pl.teamId); });
+      var nameOf = teamNamer(ids);
 
       var html = '<table><tr><th>Player</th><th>Kills</th><th>Deaths</th><th>K/D</th><th>Flags</th><th>Score</th></tr>';
       var lastTeam = null;
       list.forEach(function (pl) {
         if (pl.teamId !== lastTeam) {
           lastTeam = pl.teamId;
-          html += '<tr class="nss-team"><td colspan="6">Team ' + esc(pl.teamId) + '</td></tr>';
+          html += '<tr class="nss-team"><td colspan="6">' + esc(nameOf(pl.teamId)) + '</td></tr>';
         }
         var k = pl.scoreKills || 0, d = pl.scoreDeaths || 0;
-        html += '<tr' + (pl.hasOwnership ? ' class="nss-me"' : '') + '><td>' + esc(pl.playerName || '-') +
+        html += '<tr' + (pl.hasOwnership ? ' class="nss-me"' : '') +
+          '><td><span class="nss-av"' + avatarStyle(pl) + '></span>' + esc(pl.playerName || '-') +
           '</td><td>' + k + '</td><td>' + d + '</td><td>' + (d > 0 ? (k / d).toFixed(2) : k.toFixed(2)) +
           '</td><td>' + (pl.scoreFlags || 0) + '</td><td>' + (pl.scoreTotal || 0) + '</td></tr>';
       });
