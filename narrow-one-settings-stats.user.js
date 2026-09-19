@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.2.0
+// @version      2.2.1
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -548,7 +548,7 @@
      *   html.theme-dark  { --default-ui-bg-color: #454545; ... }
      *   (light)          { --default-ui-bg-color: white;   ... }
      *
-     * so zeroing it and its two siblings makes them all clear at once,
+     * so swapping it and its two siblings for a half-strength dark tint (visible, not black - the game still shows through) tints them all at once,
      * borders and all left alone so panels still read as panels. Text is
      * forced white with a dark halo since it now sits on the raw game view.
      * Sliders, checkboxes and text boxes are also .wrinkledPaper and would
@@ -556,9 +556,9 @@
      */
     var TRANSPARENT_CSS = [
       'html, html.theme-dark, html.theme-light, :root {',
-      '  --default-ui-bg-color: transparent !important;',
-      '  --secondary-ui-bg-color: transparent !important;',
-      '  --container-ui-bg-color: transparent !important;',
+      '  --default-ui-bg-color: rgba(22,22,28,.5) !important;',
+      '  --secondary-ui-bg-color: rgba(40,40,48,.5) !important;',
+      '  --container-ui-bg-color: rgba(55,55,64,.5) !important;',
       '  --default-text-color: #fff !important;',
       '}',
       '.dialog, .dialog * { text-shadow: 0 0 3px rgba(0,0,0,.95), 0 0 6px rgba(0,0,0,.7); }',
