@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.1.1
+// @version      2.2.0
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -516,16 +516,56 @@
 
     var CSS = [
       // The game's own HUD/dialogs run up to z-index 110 (its topmost menu
-      // toggle) - this has to clear all of that, including the scoreboard
-      // itself, or it renders but sits invisibly behind it.
-      '#nss-panel { position: fixed; top: 16px; right: 16px; z-index: 200; ' +
-        'background: rgba(15,15,20,.72); color: #fff; padding: 10px 16px; border-radius: 10px; ' +
-        'font: 600 13px system-ui, sans-serif; pointer-events: none; min-width: 150px; }',
+      // toggle) - this has to clear all of that or it renders invisibly
+      // behind it.
+      '#nss-panel { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 200; ' +
+        'display: flex; gap: 22px; align-items: flex-start; ' +
+        'background: rgba(15,15,20,.72); color: #fff; padding: 14px 20px; border-radius: 12px; ' +
+        'font: 600 13px system-ui, sans-serif; pointer-events: none; max-height: 90vh; overflow: hidden; }',
+      '#nss-panel .nss-col { min-width: 170px; }',
+      '#nss-panel .nss-players { min-width: 340px; }',
       '#nss-panel .nss-row { display:flex; justify-content:space-between; gap: 16px; padding: 2px 0; }',
       '#nss-panel .nss-row span { opacity: .6; font-weight: 400; }',
       '#nss-panel .nss-head { opacity: .5; font-size: 11px; text-transform: uppercase; ' +
-        'letter-spacing: .04em; margin: 6px 0 2px; }',
-      '#nss-panel .nss-head:first-child { margin-top: 0; }'
+        'letter-spacing: .04em; margin: 8px 0 2px; }',
+      '#nss-panel .nss-head:first-child { margin-top: 0; }',
+      '#nss-panel table { border-collapse: collapse; width: 100%; }',
+      '#nss-panel th { opacity: .5; font-weight: 400; font-size: 11px; text-align: right; padding: 2px 6px; }',
+      '#nss-panel th:first-child, #nss-panel td:first-child { text-align: left; }',
+      '#nss-panel td { text-align: right; padding: 2px 6px; }',
+      '#nss-panel tr.nss-me td { background: rgba(255,255,255,.14); }',
+      '#nss-panel tr.nss-team td { opacity: .5; font-size: 11px; text-transform: uppercase; ' +
+        'letter-spacing: .04em; text-align: left; padding-top: 8px; }',
+      // While this panel is up it stands in for the game's own scoreboard.
+      'body.nss-replacing .dialog:has(.playersListContainer) { display: none !important; }'
+    ].join('\n');
+
+    /**
+     * Every grey panel in the game - dialogs, profile rows, the health
+     * bar's backing - is a .wrinkledPaper whose fill comes from one CSS
+     * variable, and the theme just swaps that variable's value:
+     *
+     *   html.theme-dark  { --default-ui-bg-color: #454545; ... }
+     *   (light)          { --default-ui-bg-color: white;   ... }
+     *
+     * so zeroing it and its two siblings makes them all clear at once,
+     * borders and all left alone so panels still read as panels. Text is
+     * forced white with a dark halo since it now sits on the raw game view.
+     * Sliders, checkboxes and text boxes are also .wrinkledPaper and would
+     * vanish entirely, so they keep a faint fill.
+     */
+    var TRANSPARENT_CSS = [
+      'html, html.theme-dark, html.theme-light, :root {',
+      '  --default-ui-bg-color: transparent !important;',
+      '  --secondary-ui-bg-color: transparent !important;',
+      '  --container-ui-bg-color: transparent !important;',
+      '  --default-text-color: #fff !important;',
+      '}',
+      '.dialog, .dialog * { text-shadow: 0 0 3px rgba(0,0,0,.95), 0 0 6px rgba(0,0,0,.7); }',
+      'input.dialog-range-input[type=range], input.dialog-range-input[type=range]::-webkit-slider-thumb,',
+      '.dialog-text-input, .dialog-checkbox-input {',
+      '  --wrinkled-paper-color: rgba(140,140,140,.55) !important;',
+      '}'
     ].join('\n');
 
     (function injectStyle() {
@@ -536,8 +576,31 @@
       (document.head || document.documentElement).appendChild(el);
     })();
 
+    var TRANSPARENT_KEY = 'narrowone.settingsstats.transparent';
+    function transparentUiWanted() {
+      try { return localStorage.getItem(TRANSPARENT_KEY) !== '0'; } catch (e) { return true; }
+    }
+    function setTransparentUi(on) {
+      try { localStorage.setItem(TRANSPARENT_KEY, on ? '1' : '0'); } catch (e) {}
+      var el = document.getElementById('nss-transparent-style');
+      if (on && !el) {
+        el = document.createElement('style');
+        el.id = 'nss-transparent-style';
+        el.textContent = TRANSPARENT_CSS;
+        (document.head || document.documentElement).appendChild(el);
+      } else if (!on && el) {
+        el.remove();
+      }
+    }
+    setTransparentUi(transparentUiWanted());
+
     function panelRow(label, value) {
       return '<div class="nss-row"><span>' + label + '</span><b>' + value + '</b></div>';
+    }
+    function esc(s) {
+      return String(s).replace(/[&<>"]/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+      });
     }
 
     function showPanel() {
@@ -545,15 +608,47 @@
       panelEl = document.createElement('div');
       panelEl.id = 'nss-panel';
       document.body.appendChild(panelEl);
+      document.body.classList.add('nss-replacing');
       renderPanel();
     }
     function hidePanel() {
+      document.body.classList.remove('nss-replacing');
       if (panelEl) { panelEl.remove(); panelEl = null; }
     }
+
+    /** The scoreboard's own job, so hiding the native one loses nothing. */
+    function playersTable() {
+      var g = findGame();
+      var ag = g && g.gameManager && g.gameManager.activeGame;
+      if (!ag || !(ag.players instanceof Map)) return '<div class="nss-row"><span>No players yet</span></div>';
+
+      var list = [];
+      ag.players.forEach(function (pl) { if (pl && typeof pl === 'object') list.push(pl); });
+      list.sort(function (a, b) {
+        return (a.teamId - b.teamId) || ((b.scoreTotal || 0) - (a.scoreTotal || 0));
+      });
+
+      var html = '<table><tr><th>Player</th><th>Kills</th><th>Deaths</th><th>K/D</th><th>Flags</th><th>Score</th></tr>';
+      var lastTeam = null;
+      list.forEach(function (pl) {
+        if (pl.teamId !== lastTeam) {
+          lastTeam = pl.teamId;
+          html += '<tr class="nss-team"><td colspan="6">Team ' + esc(pl.teamId) + '</td></tr>';
+        }
+        var k = pl.scoreKills || 0, d = pl.scoreDeaths || 0;
+        html += '<tr' + (pl.hasOwnership ? ' class="nss-me"' : '') + '><td>' + esc(pl.playerName || '-') +
+          '</td><td>' + k + '</td><td>' + d + '</td><td>' + (d > 0 ? (k / d).toFixed(2) : k.toFixed(2)) +
+          '</td><td>' + (pl.scoreFlags || 0) + '</td><td>' + (pl.scoreTotal || 0) + '</td></tr>';
+      });
+      return html + '</table>';
+    }
+
     function renderPanel() {
       if (!panelEl) return;
       var p = findPlayer();
-      var html = '';
+      var html = '<div class="nss-col nss-players"><div class="nss-head">Players</div>' + playersTable() + '</div>';
+
+      html += '<div class="nss-col">';
       if (p) {
         var kills = p.scoreKills || 0, deaths = p.scoreDeaths || 0;
         var kd = deaths > 0 ? (kills / deaths).toFixed(2) : (kills > 0 ? kills.toFixed(2) : '0.00');
@@ -584,6 +679,7 @@
       var coins = coinsEarned();
       html += '<div class="nss-head">Coins</div>' +
         panelRow('This round', coins > 0 ? coins : '-');
+      html += '</div>';
 
       panelEl.innerHTML = html;
     }
@@ -612,6 +708,7 @@
         baseline = null;
         saveSession();
       },
+      transparentUi: setTransparentUi,
       patchState: patchState
     };
 

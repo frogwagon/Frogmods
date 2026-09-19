@@ -96,13 +96,20 @@ profile keeps its real lifetime stats (games played, kills, deaths, ...) -
 this adds a K/D row plus a running session block (kills/deaths/flags for
 this browser session, carried across matches) right into that same panel.
 
-**Hold Tab:** while the scoreboard is up, a small panel shows this match's
+**Hold Tab:** replaces the game's own scoreboard while held - a centered panel with the full player table (kills, deaths, K/D, flags, score by team) next to this match's
 kills/deaths/flags/K-D/ping/fps, a live breakdown of every way you've
 scored a point this match (kills, headshots, flag captures, assists, ... -
 the game's own scoring categories, not a guess), the running session, and
 coins earned this round once the server actually sends them at round end -
 for exactly as long as Tab is held, hooked into the game's own Tab
 binding, not a separate toggle.
+
+**Transparent UI:** every grey panel in the game (Settings, Shop, profile,
+...) is one shared paper style driven by a single CSS colour variable, so
+this clears that variable - panels keep their borders but lose the grey fill,
+text goes white with a dark halo, and sliders/checkboxes/text boxes keep a
+faint fill so they don't vanish. Turn it off with
+`NarrowSettingsStats.transparentUi(false)` in the console.
 
 - Applies its own one-off cache patch automatically the first time the
   game's cache exists (play one round) - no button to press, just one
