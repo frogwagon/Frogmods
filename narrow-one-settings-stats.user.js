@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.4.0
+// @version      2.5.0
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -601,6 +601,106 @@
       });
     })();
 
+    /* ================================================================ *
+     * FPS limit - a slider in the native Settings dialog
+     *
+     * The game paces itself off the browser's frame callback:
+     *
+     *   vsyncLoop() {
+     *     if (this.frameCount++, this.frameCount % this.frameCap == 0) { this.loop() }
+     *     window.requestAnimationFrame(this.boundLoop)
+     *   }
+     *
+     * frameCap is a plain integer, 1 by default (it even reads a hidden
+     * localStorage "frameCap" at startup). 1 means a game frame on every
+     * browser frame; 2 means every other one, and so on - so a limit is that
+     * divisor, and it can be changed live without a reload.
+     *
+     * "Uncapped" therefore means "as fast as your display refreshes" - the
+     * browser hands out frames at the monitor's rate and nothing a page does
+     * can produce more of them, so 60 Hz tops out at 60 and 144 Hz at 144.
+     * ================================================================ */
+
+    var CAP_KEY = 'narrowone.settingsstats.framecap';
+    var MAX_DIVISOR = 8;
+    function wantedCap() {
+      try {
+        var n = parseInt(localStorage.getItem(CAP_KEY), 10);
+        return n >= 1 && n <= MAX_DIVISOR ? n : 1;
+      } catch (e) { return 1; }
+    }
+    function saveCap(n) {
+      try { localStorage.setItem(CAP_KEY, String(n)); } catch (e) {}
+      applyCap();
+    }
+
+    /** Push the chosen divisor into the running game. Cheap, so also polled. */
+    function applyCap() {
+      var g = findGame();
+      var n = wantedCap();
+      if (g && typeof g.frameCap === 'number' && g.frameCap !== n) g.frameCap = n;
+    }
+    setInterval(applyCap, 1000);
+
+    /**
+     * The display's refresh rate, worked out from how fast the browser is
+     * actually handing out frames - the best rate ever seen, since a busy
+     * frame only ever makes it look slower, then snapped to the usual
+     * monitor rates so a hiccup doesn't turn 60 into 57.
+     */
+    var peakFps = 0;
+    var COMMON_HZ = [30, 48, 50, 60, 75, 90, 100, 120, 144, 165, 180, 240, 360];
+    function refreshHz() {
+      var best = peakFps || 60;
+      var pick = best;
+      COMMON_HZ.forEach(function (hz) {
+        if (Math.abs(hz - best) / hz < 0.06) pick = hz;
+      });
+      return pick;
+    }
+
+    function capLabel(n) {
+      var hz = refreshHz();
+      return n === 1 ? 'Uncapped (' + hz + ' fps, your display\'s rate)' : Math.round(hz / n) + ' fps';
+    }
+
+    /** A native-looking slider row, added under "Quality". Right end = uncapped. */
+    function addFpsOption(dialog) {
+      if (dialog.querySelector('[data-nss-fps]')) return;
+      var anchor = null;
+      dialog.querySelectorAll('.settings-item').forEach(function (row) {
+        var t = row.querySelector('.settings-item-text');
+        if (t && t.textContent.trim() === 'Quality') anchor = row;
+      });
+      if (!anchor) return;
+
+      var row = document.createElement('label');
+      row.className = 'settings-item';
+      row.dataset.nssFps = '1';
+      var text = document.createElement('div');
+      text.className = 'settings-item-text';
+      text.textContent = 'FPS limit';
+      row.appendChild(text);
+
+      var wrap = document.createElement('div');
+      wrap.className = 'settings-item-slider';
+      var input = document.createElement('input');
+      input.className = 'dialog-range-input';
+      input.type = 'range'; input.min = 1; input.max = MAX_DIVISOR; input.step = 1;
+      // slider position 1..8 <-> divisor 8..1, so dragging right raises the limit
+      input.value = MAX_DIVISOR + 1 - wantedCap();
+      var val = document.createElement('div');
+      val.className = 'settings-item-slider-value';
+      val.textContent = capLabel(wantedCap());
+      input.addEventListener('input', function () {
+        var n = MAX_DIVISOR + 1 - Number(input.value);
+        val.textContent = capLabel(n);
+        saveCap(n);
+      });
+      wrap.appendChild(input); wrap.appendChild(val); row.appendChild(wrap);
+      anchor.parentNode.insertBefore(row, anchor.nextSibling);
+    }
+
     var dialogWatcher = new MutationObserver(function (muts) {
       muts.forEach(function (m) {
         Array.prototype.forEach.call(m.addedNodes, function (node) {
@@ -609,6 +709,7 @@
           setTimeout(function () {
             widenSettingsDialog(node);
             addNameTagOption(node);
+            addFpsOption(node);
             enrichProfileDialog(node);
           }, 0);
         });
@@ -700,6 +801,12 @@
      * ================================================================ */
 
     var fps = 0;
+    /** Frames the GAME actually runs: the browser's rate divided by the cap. */
+    function gameFps() {
+      var g = findGame();
+      var cap = g && typeof g.frameCap === 'number' && g.frameCap > 0 ? g.frameCap : 1;
+      return Math.round(fps / cap);
+    }
     (function fpsLoop() {
       var windowStart = performance.now(), frames = 0;
       function tick(now) {
@@ -707,6 +814,7 @@
         frames++;
         if (now - windowStart >= 500) {
           fps = Math.round((frames * 1000) / (now - windowStart));
+          if (fps > peakFps) peakFps = fps;
           frames = 0; windowStart = now;
         }
       }
@@ -926,7 +1034,7 @@
         html += '<div class="nss-head">This match</div>';
         html += panelRow('Kills', kills) + panelRow('Deaths', deaths) +
           panelRow('Flags', p.scoreFlags || 0) + panelRow('K/D', kd) +
-          panelRow('Ping', Math.round(p.ping || 0) + 'ms') + panelRow('FPS', fps);
+          panelRow('Ping', Math.round(p.ping || 0) + 'ms') + panelRow('FPS', gameFps());
       } else {
         html += '<div class="nss-head">This match</div><div class="nss-row"><span>Not in a match</span></div>';
       }

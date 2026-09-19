@@ -108,6 +108,8 @@ binding, not a separate toggle.
 
 **Scoreboard:** team headers read Red team / Blue team (named from your own team's colour, the only one the game exposes), each row has the player's avatar, and the weapon-switch bar keeps its normal grey.
 
+**FPS limit (Settings option):** an "FPS limit" slider under Quality. The game runs one frame per `frameCap` browser frames (a plain integer, default 1), so the slider changes that divisor live with no reload and the labels are your real display rate divided by it (144 Hz: 144 / 72 / 48 / 36 ...). Right end is Uncapped, which means as fast as your display refreshes - the browser hands out frames at the monitor's rate and no page can exceed it. The Tab panel's FPS now shows the game's actual frame rate.
+
 **Tinted UI:** every grey panel in the game (Settings, Shop, profile,
 ...) is one shared paper style driven by a single CSS colour variable, so
 this swaps that variable for a half-strength dark tint - panels keep their borders, the game shows through, and it is not black,
