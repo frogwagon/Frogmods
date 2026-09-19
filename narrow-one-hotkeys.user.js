@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Hotkey Editor
 // @namespace    narrowone-hotkeys
-// @version      2.1.3
+// @version      2.2.0
 // @description  Rebind the game's own controls, plus menu shortcuts like Shop and Settings that never had a key at all, plus the toggle keys of whichever other Narrow One mods you have installed. Adds a Hotkeys tab to the main menu.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -237,6 +237,15 @@
         present: function () { return !!PAGE.NarrowCrosshair; } },
       { id: 'targetpractice.toggle', mod: 'Target Practice', label: 'Open Target Practice', def: null,
         present: function () { return !!PAGE.NarrowTargetPractice; } },
+
+      { id: 'spectate.prev', mod: 'Spectator Cam', label: 'Previous player (spectating)', def: 'KeyZ',
+        present: function () { return !!PAGE.NarrowSpectatorCam; } },
+      { id: 'spectate.next', mod: 'Spectator Cam', label: 'Next player (spectating)', def: 'KeyX',
+        present: function () { return !!PAGE.NarrowSpectatorCam; } },
+      { id: 'spectate.mode', mod: 'Spectator Cam', label: 'Change view (spectating)', def: 'KeyC',
+        present: function () { return !!PAGE.NarrowSpectatorCam; } },
+      { id: 'spectate.release', mod: 'Spectator Cam', label: 'Free camera (spectating)', def: 'KeyV',
+        present: function () { return !!PAGE.NarrowSpectatorCam; } },
 
       { id: 'menu.shop', mod: 'Game Menu', label: 'Open Shop', def: null,
         present: function () { return true; }, run: function () { clickMenuButton(['Shop']); } },

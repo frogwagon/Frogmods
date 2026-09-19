@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.5.1
+// @version      2.5.2
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -270,6 +270,16 @@
       return (ag && ag.players instanceof Map) ? ag : null;
     }
 
+    /**
+     * Spectators are on their own extra team, so a match with them has three
+     * team ids rather than two. The game's own definition of one is whoever
+     * updateFly() switched flight on for (rigidBody.fly) - that is what marks
+     * them here, so they are never labelled as a real team or given a tag.
+     */
+    function isSpectatorPlayer(pl) {
+      return !!(pl && pl.rigidBody && pl.rigidBody.fly === true && !pl.noclip);
+    }
+
     var player = null, playerGame = null;
     function findPlayer() {
       var ag = currentGame();
@@ -503,7 +513,12 @@
       cameraTriedAt = now;
       var g = findGame();
       if (!g) return null;
-      var hits = collectMatching(g, function (o) { return o.isPerspectiveCamera === true; }, 1);
+      // the game's own camera first - po().cam.cam, the one named "cam" - and only
+      // then fall back to hunting for any perspective camera (there is also a
+      // small preview one that is not the view you are looking through)
+      var direct = g.cam && g.cam.cam;
+      if (direct && direct.isPerspectiveCamera === true) { camera = direct; return camera; }
+      var hits = collectMatching(g, function (o) { return o.isPerspectiveCamera === true && (o.far || 0) > 100; }, 1);
       camera = hits.length ? hits[0] : null;
       return camera;
     }
@@ -575,7 +590,7 @@
       var layer = tagLayer();
       var seen = new Set();
       ag.players.forEach(function (pl) {
-        if (!pl || pl === me || pl.dead) return;
+        if (!pl || pl === me || pl.dead || isSpectatorPlayer(pl)) return;
         var mate = pl.teamId === me.teamId;
         var pt = toScreen(pl.pos, cam, TAG_HEIGHT);
         if (!pt) return;
@@ -1025,18 +1040,23 @@
       var list = [];
       ag.players.forEach(function (pl) { if (pl && typeof pl === 'object') list.push(pl); });
       list.sort(function (a, b) {
-        return (a.teamId - b.teamId) || ((b.scoreTotal || 0) - (a.scoreTotal || 0));
+        return (isSpectatorPlayer(a) - isSpectatorPlayer(b)) ||   // spectators last
+          (a.teamId - b.teamId) || ((b.scoreTotal || 0) - (a.scoreTotal || 0));
       });
       var ids = [];
-      list.forEach(function (pl) { if (ids.indexOf(pl.teamId) === -1) ids.push(pl.teamId); });
+      list.forEach(function (pl) {
+        if (!isSpectatorPlayer(pl) && ids.indexOf(pl.teamId) === -1) ids.push(pl.teamId);
+      });
       var nameOf = teamNamer(ids);
 
       var html = '<table><tr><th>Player</th><th>Kills</th><th>Deaths</th><th>K/D</th><th>Flags</th><th>Score</th></tr>';
-      var lastTeam = null;
+      var lastGroup = null;
       list.forEach(function (pl) {
-        if (pl.teamId !== lastTeam) {
-          lastTeam = pl.teamId;
-          html += '<tr class="nss-team"><td colspan="6">' + esc(nameOf(pl.teamId)) + '</td></tr>';
+        var spec = isSpectatorPlayer(pl);
+        var group = spec ? 'spectators' : 't' + pl.teamId;
+        if (group !== lastGroup) {
+          lastGroup = group;
+          html += '<tr class="nss-team"><td colspan="6">' + esc(spec ? 'Spectators' : nameOf(pl.teamId)) + '</td></tr>';
         }
         var k = pl.scoreKills || 0, d = pl.scoreDeaths || 0;
         html += '<tr' + (pl.hasOwnership ? ' class="nss-me"' : '') +

@@ -122,7 +122,28 @@ faint fill so they don't vanish. Turn it off with
   page reload. Safe alongside 1 Kill = 1 Stat Point, which uses the same
   patch.
 
-## Install (all five)
+### [Spectator Cam](narrow-one-spectator-cam.user.js)
+
+Camera tools for when you are **spectating**: lock onto a player in chase or
+first-person view, and follow the arrows they fire, on top of the free flight
+the game already gives spectators.
+
+Only active while you are a spectator, and it decides that the way the game
+does - flight (`rigidBody.fly`) is switched on only for spectators - so while
+you are playing every key here is ignored and the camera is left alone.
+Spectators already see the whole match by design, so it shows nothing the
+game wasn't willing to show you.
+
+- **Z / X** previous / next player, **C** change view (chase, first person,
+  arrow cam), **V** back to free camera - all rebindable in Hotkey Editor.
+- Arrow cam rides the locked player's latest arrow and stays on it for a
+  moment after it lands.
+- Needs "Fly when spectating" on (it is by default) and the same one-off cache
+  patch as 1 Kill = 1 Stat Point, which it applies itself.
+- Not a replay: the game deletes the map when a round ends, so there is nothing
+  to fly through afterwards. This works live, for a match you are watching.
+
+## Install (all six)
 
 1. Install **[Tampermonkey](https://www.tampermonkey.net/)** (Chrome, Edge,
    Firefox, Opera).
