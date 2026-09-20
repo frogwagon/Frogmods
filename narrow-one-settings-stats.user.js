@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.5.3
+// @version      2.6.0
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -565,6 +565,195 @@
       anchor.parentNode.insertBefore(row, anchor.nextSibling);
     }
 
+    /* ================================================================ *
+     * Kill feed and bow charge - two more native Settings options
+     *
+     * Both are off by default, both read only what the game already holds
+     * for your own client, and neither shows anything about a player you
+     * couldn't already see on the scoreboard.
+     * ================================================================ */
+
+    var FEED_KEY = 'narrowone.settingsstats.killfeed';
+    var CHARGE_KEY = 'narrowone.settingsstats.bowcharge';
+    function flagOn(key) {
+      try { return localStorage.getItem(key) === '1'; } catch (e) { return false; }
+    }
+    function setFlag(key, on) {
+      try { localStorage.setItem(key, on ? '1' : '0'); } catch (e) {}
+    }
+
+    /** Generic native-looking checkbox row, slotted in under the last of our rows (or "Show ping and fps"). */
+    function addToggleRow(dialog, marker, label, key) {
+      if (dialog.querySelector('[data-' + marker + ']')) return;
+      var anchor = null, last = null;
+      dialog.querySelectorAll('.settings-item').forEach(function (row) {
+        var t = row.querySelector('.settings-item-text');
+        if (t && t.textContent.trim() === 'Show ping and fps') anchor = row;
+        if (row.dataset.nssTags || row.dataset.nssFeed || row.dataset.nssCharge) last = row;
+      });
+      anchor = last || anchor;
+      if (!anchor) return;
+
+      var row = document.createElement('label');
+      row.className = 'settings-item';
+      row.setAttribute('data-' + marker, '1');
+      var text = document.createElement('div');
+      text.className = 'settings-item-text';
+      text.textContent = label;
+      row.appendChild(text);
+      var box = document.createElement('input');
+      box.type = 'checkbox';
+      box.tabIndex = -1;
+      box.className = 'dialog-checkbox-input wrinkledPaper';
+      box.style.setProperty('--wrinkled-paper-seed', String(Math.floor(Math.random() * 99999)));
+      box.checked = flagOn(key);
+      box.addEventListener('change', function () { setFlag(key, box.checked); });
+      row.appendChild(box);
+      anchor.parentNode.insertBefore(row, anchor.nextSibling);
+    }
+    function addFeedAndChargeOptions(dialog) {
+      addToggleRow(dialog, 'nss-feed', 'Kill feed', FEED_KEY);
+      addToggleRow(dialog, 'nss-charge', 'Bow charge under crosshair', CHARGE_KEY);
+    }
+
+    /* ---- bow charge ---- */
+
+    /**
+     * The bow object exposes its own draw state: fireAmount01 (0..1 while
+     * you pull), arrowCount (1..3 once it's fully drawn - extra arrows
+     * stack) and nextArrowTimer (0..1 progress to the next extra arrow).
+     * Drawn as a small bar just under the crosshair, only while you are
+     * alive, not a spectator, and actually drawing a bow.
+     */
+    var chargeEl = null, chargeFill = null, chargePips = [];
+    function ensureChargeEl() {
+      if (chargeEl && chargeEl.isConnected) return;
+      chargeEl = document.createElement('div');
+      chargeEl.style.cssText = 'position:fixed;left:50%;top:calc(50% + 34px);width:64px;height:6px;' +
+        'transform:translateX(-50%);background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.55);' +
+        'border-radius:4px;pointer-events:none;z-index:150;display:none;';
+      chargeFill = document.createElement('div');
+      chargeFill.style.cssText = 'height:100%;width:0;background:#fff;border-radius:3px;';
+      chargeEl.appendChild(chargeFill);
+      var pips = document.createElement('div');
+      pips.style.cssText = 'position:absolute;left:0;right:0;top:9px;display:flex;justify-content:center;gap:4px;';
+      chargePips = [];
+      for (var i = 0; i < 3; i++) {
+        var p = document.createElement('div');
+        p.style.cssText = 'width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.25);border:1px solid rgba(255,255,255,.6);';
+        pips.appendChild(p); chargePips.push(p);
+      }
+      chargeEl.appendChild(pips);
+      document.body.appendChild(chargeEl);
+    }
+
+    function chargeTick() {
+      var show = false;
+      try {
+        if (flagOn(CHARGE_KEY)) {
+          var me = findPlayer();
+          var w = me && !me.dead && !isSpectatorPlayer(me) ? me.activeWeapon : null;
+          if (w && typeof w.fireAmount01 === 'number') {
+            var f = w.fireAmount01, n = Number(w.arrowCount) || 0, next = Number(w.nextArrowTimer) || 0;
+            if (f > 0.001 || n > 1) {
+              ensureChargeEl();
+              var full = f >= 0.999;
+              chargeFill.style.width = Math.max(0, Math.min(1, f)) * 100 + '%';
+              chargeFill.style.background = full ? '#7dff7d' : '#fff';
+              for (var i = 0; i < chargePips.length; i++) {
+                var have = full && n > i;
+                chargePips[i].style.background = have ? '#7dff7d' :
+                  (full && i === n ? 'rgba(125,255,125,' + (0.15 + 0.6 * Math.max(0, Math.min(1, next))) + ')' : 'rgba(255,255,255,.25)');
+              }
+              show = true;
+            }
+          }
+        }
+      } catch (e) {}
+      if (chargeEl) chargeEl.style.display = show ? 'block' : 'none';
+    }
+    (function chargeLoop() {
+      chargeTick();
+      requestAnimationFrame(chargeLoop);
+    })();
+
+    /* ---- kill feed ---- */
+
+    /**
+     * The game hands the client no "X killed Y" event (player.die() takes no
+     * killer), so this infers it from the scoreboard's own numbers: a player
+     * going dead, paired with whoever's kill count went up around the same
+     * moment. If nobody's count moved in time it reads "X died".
+     */
+    var feedEl = null;
+    var feedState = { game: null, seen: new Map(), deaths: [], kills: [] };
+    function ensureFeedEl() {
+      if (feedEl && feedEl.isConnected) return;
+      feedEl = document.createElement('div');
+      feedEl.style.cssText = 'position:fixed;right:12px;top:120px;display:flex;flex-direction:column;' +
+        'align-items:flex-end;gap:4px;pointer-events:none;z-index:150;font:600 14px sans-serif;';
+      document.body.appendChild(feedEl);
+    }
+    function nameSpan(pl, colors) {
+      var s = document.createElement('span');
+      s.textContent = String(pl.playerName || 'Player');
+      var c = colors[pl.teamId];
+      s.style.color = c ? 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')' : '#fff';
+      if (pl.hasOwnership) s.style.textDecoration = 'underline';
+      return s;
+    }
+    function pushFeed(killer, victim, colors) {
+      ensureFeedEl();
+      var line = document.createElement('div');
+      line.style.cssText = 'background:rgba(0,0,0,.5);color:#fff;padding:3px 8px;border-radius:5px;' +
+        'text-shadow:0 1px 2px #000;transition:opacity .5s;';
+      if (killer) {
+        line.appendChild(nameSpan(killer, colors));
+        line.appendChild(document.createTextNode(' → '));
+      }
+      line.appendChild(nameSpan(victim, colors));
+      if (!killer) line.appendChild(document.createTextNode(' died'));
+      feedEl.appendChild(line);
+      while (feedEl.children.length > 5) feedEl.removeChild(feedEl.firstChild);
+      setTimeout(function () { line.style.opacity = '0'; }, 6000);
+      setTimeout(function () { if (line.parentNode) line.parentNode.removeChild(line); }, 6600);
+    }
+
+    function feedTick() {
+      var ag = currentGame();
+      if (!flagOn(FEED_KEY) || !ag) {
+        feedState.game = null;
+        if (feedEl) feedEl.style.display = 'none';
+        return;
+      }
+      if (feedEl) feedEl.style.display = 'flex';
+      var now = Date.now();
+      if (feedState.game !== ag) feedState = { game: ag, seen: new Map(), deaths: [], kills: [] };
+
+      ag.players.forEach(function (pl) {
+        if (!pl || isSpectatorPlayer(pl)) return;
+        var prev = feedState.seen.get(pl);
+        var k = Number(pl.scoreKills) || 0, dead = !!pl.dead;
+        if (prev) {
+          if (!prev.dead && dead) feedState.deaths.push({ pl: pl, at: now });
+          if (k > prev.kills) feedState.kills.push({ pl: pl, at: now });
+        }
+        feedState.seen.set(pl, { dead: dead, kills: k });
+      });
+
+      var colors = teamColorMap(ag);
+      var st = feedState;
+      st.deaths = st.deaths.filter(function (d) {
+        var i = -1;
+        for (var j = 0; j < st.kills.length; j++) { if (st.kills[j].pl !== d.pl) { i = j; break; } }
+        if (i >= 0) { pushFeed(st.kills[i].pl, d.pl, colors); st.kills.splice(i, 1); return false; }
+        if (now - d.at > 1500) { pushFeed(null, d.pl, colors); return false; }
+        return true;
+      });
+      st.kills = st.kills.filter(function (x) { return now - x.at < 3000; });
+    }
+    setInterval(function () { try { feedTick(); } catch (e) {} }, 250);
+
     var camera = null, cameraTriedAt = 0;
     function findCamera() {
       if (camera && camera.projectionMatrix && camera.matrixWorldInverse) return camera;
@@ -784,6 +973,7 @@
           setTimeout(function () {
             widenSettingsDialog(node);
             addNameTagOption(node);
+            addFeedAndChargeOptions(node);
             addFpsOption(node);
             enrichProfileDialog(node);
           }, 0);
