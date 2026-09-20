@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.6.1
+// @version      2.7.0
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -619,58 +619,118 @@
     /* ---- bow charge ---- */
 
     /**
-     * The bow object exposes its own draw state: fireAmount01 (0..1 while
-     * you pull), arrowCount (1..3 once it's fully drawn - extra arrows
-     * stack) and nextArrowTimer (0..1 progress to the next extra arrow).
-     * Drawn as a small bar just under the crosshair, only while you are
-     * alive, not a spectator, and actually drawing a bow.
+     * Each of the game's six bows works differently, so each gets its own
+     * readout under the crosshair. They are told apart by the bow's own
+     * bowWeaponTypeId:
+     *
+     *   smallBow          (B1)  bar = draw, three circles = stacked arrows
+     *   mediumBow         (B2)  one circle, fills as you draw, green when full
+     *   largeBow          (B3)  same single circle
+     *   smallCrossbow     (B4)  bar + one circle = reload after each shot
+     *   repeatingCrossbow (B5)  bar = reloading; once it is full, one circle
+     *                           per arrow in the box (10), and they drop away
+     *                           as you fire
+     *   largeCrossbow     (B6)  bar + one circle = reload, both full when loaded
+     *
+     * State comes from the bow object itself: fireAmount01 / arrowCount /
+     * nextArrowTimer, lastFireTime + getArrowReadyMs(), loadedArrowCount +
+     * loadingOrShootingState, loadAmount01. Only shown while you are alive
+     * and not a spectator.
      */
-    var chargeEl = null, chargeFill = null, chargePips = [];
+    var GREEN = '#7dff7d', DIM = 'rgba(255,255,255,.25)';
+    var chargeEl = null, chargeBar = null, chargeFill = null, chargePips = null, pipEls = [];
     function ensureChargeEl() {
       if (chargeEl && chargeEl.isConnected) return;
       chargeEl = document.createElement('div');
-      chargeEl.style.cssText = 'position:fixed;left:50%;top:calc(50% + 34px);width:64px;height:6px;' +
-        'transform:translateX(-50%);background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.55);' +
-        'border-radius:4px;pointer-events:none;z-index:150;display:none;';
+      chargeEl.style.cssText = 'position:fixed;left:50%;top:calc(50% + 34px);width:64px;transform:translateX(-50%);' +
+        'display:none;flex-direction:column;align-items:center;gap:4px;pointer-events:none;z-index:150;';
+      chargeBar = document.createElement('div');
+      chargeBar.style.cssText = 'width:64px;height:6px;background:rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.55);border-radius:4px;';
       chargeFill = document.createElement('div');
       chargeFill.style.cssText = 'height:100%;width:0;background:#fff;border-radius:3px;';
-      chargeEl.appendChild(chargeFill);
-      var pips = document.createElement('div');
-      pips.style.cssText = 'position:absolute;left:0;right:0;top:9px;display:flex;justify-content:center;gap:4px;';
-      chargePips = [];
-      for (var i = 0; i < 3; i++) {
-        var p = document.createElement('div');
-        p.style.cssText = 'width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.25);border:1px solid rgba(255,255,255,.6);';
-        pips.appendChild(p); chargePips.push(p);
-      }
-      chargeEl.appendChild(pips);
+      chargeBar.appendChild(chargeFill);
+      chargePips = document.createElement('div');
+      chargePips.style.cssText = 'display:flex;flex-wrap:wrap;justify-content:center;gap:4px;width:110px;';
+      chargeEl.appendChild(chargeBar); chargeEl.appendChild(chargePips);
       document.body.appendChild(chargeEl);
+      pipEls = [];
+    }
+    function clamp01(v) { return Math.max(0, Math.min(1, Number(v) || 0)); }
+
+    /** view = { bar: 0..1 | null, pips: n, lit: whole pips lit, part: 0..1 fill of the next pip } */
+    function drawCharge(view) {
+      ensureChargeEl();
+      chargeBar.style.display = view.bar === null ? 'none' : 'block';
+      if (view.bar !== null) {
+        chargeFill.style.width = clamp01(view.bar) * 100 + '%';
+        chargeFill.style.background = view.bar >= 0.999 ? GREEN : '#fff';
+      }
+      while (pipEls.length < view.pips) {
+        var p = document.createElement('div');
+        p.style.cssText = 'width:10px;height:10px;border-radius:50%;border:1px solid rgba(255,255,255,.7);';
+        chargePips.appendChild(p); pipEls.push(p);
+      }
+      while (pipEls.length > view.pips) chargePips.removeChild(pipEls.pop());
+      for (var i = 0; i < pipEls.length; i++) {
+        var f = i < view.lit ? 1 : (i === view.lit ? clamp01(view.part) : 0);
+        pipEls[i].style.background = f >= 0.999 ? GREEN :
+          (f > 0 ? 'conic-gradient(' + GREEN + ' ' + f * 360 + 'deg,' + DIM + ' 0)' : DIM);
+      }
+      chargeEl.style.display = 'flex';
     }
 
+    function chargeView(w) {
+      var type = w.bowWeaponTypeId;
+      var g = findGame(), now = g && g.now;
+      switch (type) {
+        case 'mediumBow': case 'largeBow':
+          if (typeof w.fireAmount01 !== 'number' || w.fireAmount01 <= 0.001) return null;
+          return { bar: null, pips: 1, lit: 0, part: w.fireAmount01 };
+
+        case 'smallCrossbow': {
+          if (typeof w.getArrowReadyMs !== 'function' || typeof now !== 'number') return null;
+          var ready = w.getArrowReadyMs(), since = now - w.lastFireTime;
+          if (!(since >= 0 && since < ready)) return null;
+          return { bar: since / ready, pips: 1, lit: 0, part: 0, reload: 1 };
+        }
+
+        case 'largeCrossbow': {
+          if (typeof w.loadAmount01 !== 'number' || w.loadAmount01 >= 1) return null;
+          return { bar: w.loadAmount01, pips: 1, lit: 0, part: 0, reload: 1 };
+        }
+
+        case 'repeatingCrossbow': {
+          var n = Number(w.loadedArrowCount);
+          if (!(n >= 0)) return null;
+          if (w.loadingOrShootingState) return { bar: n / 10, pips: 0, lit: 0, part: 0 };
+          if (n >= 10 && !w.actionIsDown) return null;
+          return { bar: null, pips: 10, lit: n, part: 0 };
+        }
+
+        default:   // smallBow, or a bow added later that draws the same way
+          if (typeof w.fireAmount01 !== 'number') return null;
+          var c = Number(w.arrowCount) || 0;
+          if (w.fireAmount01 <= 0.001 && c <= 1) return null;
+          var full = w.fireAmount01 >= 0.999;
+          return { bar: w.fireAmount01, pips: 3, lit: full ? c : 0, part: full ? w.nextArrowTimer : 0 };
+      }
+    }
+
+    var lingerUntil = 0;
     function chargeTick() {
-      var show = false;
+      var view = null;
       try {
         if (flagOn(CHARGE_KEY)) {
           var me = findPlayer();
           var w = me && !me.dead && !isSpectatorPlayer(me) ? me.activeWeapon : null;
-          if (w && typeof w.fireAmount01 === 'number') {
-            var f = w.fireAmount01, n = Number(w.arrowCount) || 0, next = Number(w.nextArrowTimer) || 0;
-            if (f > 0.001 || n > 1) {
-              ensureChargeEl();
-              var full = f >= 0.999;
-              chargeFill.style.width = Math.max(0, Math.min(1, f)) * 100 + '%';
-              chargeFill.style.background = full ? '#7dff7d' : '#fff';
-              for (var i = 0; i < chargePips.length; i++) {
-                var have = full && n > i;
-                chargePips[i].style.background = have ? '#7dff7d' :
-                  (full && i === n ? 'rgba(125,255,125,' + (0.15 + 0.6 * Math.max(0, Math.min(1, next))) + ')' : 'rgba(255,255,255,.25)');
-              }
-              show = true;
-            }
-          }
+          if (w) view = chargeView(w);
         }
-      } catch (e) {}
-      if (chargeEl) chargeEl.style.display = show ? 'block' : 'none';
+      } catch (e) { view = null; }
+      var t = Date.now();
+      if (view && view.reload) lingerUntil = t + 350;
+      else if (!view && t < lingerUntil) view = { bar: 1, pips: 1, lit: 1, part: 0 };   // crossbow just finished loading: show it full for a moment
+      if (view) { try { drawCharge(view); } catch (e) {} }
+      else if (chargeEl) chargeEl.style.display = 'none';
     }
     (function chargeLoop() {
       chargeTick();
