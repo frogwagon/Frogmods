@@ -96,6 +96,8 @@ profile keeps its real lifetime stats (games played, kills, deaths, ...) -
 this adds a K/D row plus a running session block (kills/deaths/flags for
 this browser session, carried across matches) right into that same panel.
 
+**Ending the session:** the session totals carry across matches and reloads, so the profile dialog has an **End session (reset to 0)** button, and a session left untouched for 2 hours ends by itself the next time you load the game.
+
 **Hold Tab:** replaces the game's own scoreboard while held - a centered panel with the full player table (kills, deaths, K/D, flags, score by team) next to this match's
 kills/deaths/flags/K-D/ping/fps, a live breakdown of every way you've
 scored a point this match (kills, headshots, flag captures, assists, ... -

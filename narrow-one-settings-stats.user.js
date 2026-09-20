@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.7.0
+// @version      2.8.0
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -483,6 +483,16 @@
         kd: profileStatRow('kills', 'Session K/D')
       };
       Object.keys(sessionRows).forEach(function (k) { statsEl.appendChild(sessionRows[k].el); });
+
+      // The session otherwise runs on across matches and reloads, so give it an end.
+      var endBtn = document.createElement('button');
+      endBtn.type = 'button';
+      endBtn.tabIndex = -1;
+      endBtn.textContent = 'End session (reset to 0)';
+      endBtn.style.cssText = 'grid-column:1/-1;margin-top:6px;padding:6px 10px;cursor:pointer;font:inherit;' +
+        'color:inherit;background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.35);border-radius:6px;';
+      endBtn.addEventListener('click', function () { endSession(); update(); });
+      statsEl.appendChild(endBtn);
 
       function update() {
         if (!statsEl.isConnected) { clearInterval(timer); return; }
@@ -1067,6 +1077,16 @@
       try { localStorage.setItem(STORE_KEY, JSON.stringify(session)); } catch (e) {}
     }
     loadSession();
+    var SESSION_IDLE_MS = 2 * 3600 * 1000;   // untouched this long = a new session
+    if (session.last && Date.now() - session.last > SESSION_IDLE_MS) {
+      session = { kills: 0, deaths: 0, flags: 0, matches: 1 };
+      saveSession();
+    }
+    function endSession() {
+      session = { kills: 0, deaths: 0, flags: 0, matches: 1, last: Date.now() };
+      baseline = null;
+      saveSession();
+    }
 
     function bankCurrentMatch() {
       var p = findPlayer();
@@ -1117,6 +1137,7 @@
         var now = { kills: p.scoreKills || 0, deaths: p.scoreDeaths || 0, flags: p.scoreFlags || 0 };
         if (!baseline) baseline = now;
         lastSeen = now;
+        if (Date.now() - (session.last || 0) > 60000) { session.last = Date.now(); saveSession(); }
       }
     }, 500);
 
@@ -1468,11 +1489,7 @@
     PAGE.NarrowSettingsStats = window.NarrowSettingsStats = {
       get player() { return findPlayer(); },
       get session() { return session; },
-      resetSession: function () {
-        session = { kills: 0, deaths: 0, flags: 0, matches: 1 };
-        baseline = null;
-        saveSession();
-      },
+      resetSession: function () { endSession(); },
       transparentUi: setTransparentUi,
       patchState: patchState
     };
