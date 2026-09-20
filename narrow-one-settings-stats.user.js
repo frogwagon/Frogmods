@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.9.0
+// @version      2.9.1
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -761,6 +761,7 @@
     var TRAIL_KEY = 'narrowone.settingsstats.arrowtrail';
     var TRAIL_COLOR_KEY = 'narrowone.settingsstats.arrowtrail.color';
     var TRAIL_STR_KEY = 'narrowone.settingsstats.arrowtrail.strength';
+    var TRAIL_RAINBOW_KEY = 'narrowone.settingsstats.arrowtrail.rainbow';
     function trailColor() {
       try {
         var c = localStorage.getItem(TRAIL_COLOR_KEY);
@@ -781,7 +782,7 @@
         var t = row.querySelector('.settings-item-text');
         if (t && t.textContent.trim() === 'Show ping and fps') anchor = row;
         if (row.dataset.nssTags || row.dataset.nssFeed || row.dataset.nssCharge ||
-            row.dataset.nssTrail || row.dataset.nssTrailColor || row.dataset.nssTrailStr) last = row;
+            row.dataset.nssTrail || row.dataset.nssTrailColor || row.dataset.nssTrailRainbow || row.dataset.nssTrailStr) last = row;
       });
       anchor = last || anchor;
       if (!anchor) return null;
@@ -817,6 +818,15 @@
         });
         row.appendChild(pick);
       });
+      addSettingsRow(dialog, 'nss-trail-rainbow', 'Rainbow trail', function (row) {
+        var box = document.createElement('input');
+        box.type = 'checkbox'; box.tabIndex = -1;
+        box.className = 'dialog-checkbox-input wrinkledPaper';
+        box.style.setProperty('--wrinkled-paper-seed', String(Math.floor(Math.random() * 99999)));
+        box.checked = flagOn(TRAIL_RAINBOW_KEY);
+        box.addEventListener('change', function () { setFlag(TRAIL_RAINBOW_KEY, box.checked); });
+        row.appendChild(box);
+      });
       addSettingsRow(dialog, 'nss-trail-str', 'Trail strength', function (row) {
         var wrap = document.createElement('div');
         wrap.className = 'settings-item-slider';
@@ -835,21 +845,46 @@
       });
     }
 
-    var FRAG_OLD = 'gl_FragColor = LinearTosRGB(vec4(col, alpha));';
     var trailPatched = new WeakSet();
+    var trailDebug = { arrows: 0, mine: 0, patched: 0, skipped: '', error: '' };
+
+    /**
+     * Patches one arrow's trail material. The final colour line is found by
+     * pattern rather than exact text, so small differences in spacing don't
+     * defeat it; if the shader still isn't recognisable, trailDebug.skipped
+     * says why (NarrowSettingsStats.trailDebug in the console).
+     */
     function patchTrailMaterial(m) {
       if (trailPatched.has(m)) return !!(m.uniforms && m.uniforms.nssOn);
       trailPatched.add(m);
       var fs = m.fragmentShader;
-      if (typeof fs !== 'string' || fs.indexOf(FRAG_OLD) < 0 || fs.indexOf('void main(){') < 0 ||
-          !m.uniforms || !m.uniforms.colorMultiplier) return false;
-      m.fragmentShader = fs
-        .replace('void main(){', 'uniform vec3 nssTint;\nuniform float nssOn;\nuniform float nssStr;\nvoid main(){')
-        .replace(FRAG_OLD, 'if (nssOn > 0.5) { col = nssTint; alpha = clamp(alpha * nssStr, 0.0, 1.0); }\n' + FRAG_OLD);
-      m.uniforms.nssTint = { value: m.uniforms.colorMultiplier.value.clone() };
+      if (typeof fs !== 'string') { trailDebug.skipped = 'material has no fragmentShader string'; return false; }
+      var mainRe = /void\s+main\s*\(\s*\)\s*\{/;
+      var outRe = /gl_FragColor\s*=\s*[^;]*;/;
+      if (!mainRe.test(fs) || !outRe.test(fs)) { trailDebug.skipped = 'shader has no recognisable main()/gl_FragColor'; return false; }
+      if (!/\balpha\b/.test(fs) || !/\bcol\b/.test(fs)) { trailDebug.skipped = 'shader has no col/alpha variables'; return false; }
+      if (!m.uniforms) { trailDebug.skipped = 'material has no uniforms'; return false; }
+      var vec3Class = (m.uniforms.colorMultiplier && m.uniforms.colorMultiplier.value) ||
+                      (m.uniforms.shootStartPos && m.uniforms.shootStartPos.value);
+      if (!vec3Class || typeof vec3Class.clone !== 'function') { trailDebug.skipped = 'no vec3 uniform to copy'; return false; }
+
+      var decl = 'uniform vec3 nssTint;\nuniform float nssOn;\nuniform float nssStr;\nuniform float nssRainbow;\n';
+      var hasT = /\bvArrowT\b/.test(fs);
+      var rainbow = hasT
+        ? 'if (nssRainbow > 0.5) { col = 0.5 + 0.5 * cos(6.283185 * (vArrowT * 0.35 + vec3(0.0, 1.0, 2.0) / 3.0)); }\n'
+        : '';
+      fs = fs.replace(mainRe, function (s) { return decl + s; });
+      fs = fs.replace(outRe, function (s) {
+        return 'if (nssOn > 0.5) { col = nssTint; ' + rainbow.replace(/\n$/, '') +
+               ' alpha = clamp(alpha * nssStr, 0.0, 1.0); }\n' + s;
+      });
+      m.fragmentShader = fs;
+      m.uniforms.nssTint = { value: vec3Class.clone() };
       m.uniforms.nssOn = { value: 0 };
       m.uniforms.nssStr = { value: 1 };
+      m.uniforms.nssRainbow = { value: 0 };
       m.needsUpdate = true;
+      trailDebug.patched++;
       return true;
     }
     function srgbToLinear(v) { return Math.pow(v / 255, 2.2); }
@@ -858,24 +893,29 @@
       var ag = currentGame(), arrows = ag && ag.arrowManager && ag.arrowManager.arrows;
       var me = findPlayer();
       if (!arrows || !me || typeof arrows.forEach !== 'function') return;
-      var on = flagOn(TRAIL_KEY), hex = trailColor(), str = trailStrength();
+      var on = flagOn(TRAIL_KEY), rainbow = flagOn(TRAIL_RAINBOW_KEY), hex = trailColor(), str = trailStrength();
       var r = srgbToLinear(parseInt(hex.substr(1, 2), 16)),
           g = srgbToLinear(parseInt(hex.substr(3, 2), 16)),
           b = srgbToLinear(parseInt(hex.substr(5, 2), 16));
       function each(a) {
-        if (!a || a.shotBy !== me || !a.trailMat) return;
-        if (!patchTrailMaterial(a.trailMat)) return;
-        var u = a.trailMat.uniforms;
+        if (!a || typeof a !== 'object') return;
+        trailDebug.arrows++;
+        if (a.shotBy !== me) return;
+        trailDebug.mine++;
+        var m = (a.trailObj && a.trailObj.material) || a.trailMat;
+        if (!m || !patchTrailMaterial(m)) return;
+        var u = m.uniforms;
         u.nssOn.value = on ? 1 : 0;
+        u.nssRainbow.value = rainbow ? 1 : 0;
         u.nssStr.value = str;
         u.nssTint.value.set(r, g, b);
       }
       arrows.forEach(function (v) {
-        if (v && typeof v.forEach === 'function' && !v.trailMat) v.forEach(each); else each(v);
+        if (v && typeof v.forEach === 'function' && !v.shotBy) v.forEach(each); else each(v);
       });
     }
     (function trailLoop() {
-      try { trailTick(); } catch (e) {}
+      try { trailTick(); } catch (e) { trailDebug.error = String(e && e.message || e); }
       requestAnimationFrame(trailLoop);
     })();
 
@@ -1624,6 +1664,7 @@
       get session() { return session; },
       resetSession: function () { endSession(); },
       transparentUi: setTransparentUi,
+      trailDebug: trailDebug,
       patchState: patchState
     };
 
