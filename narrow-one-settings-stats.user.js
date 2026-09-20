@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.8.0
+// @version      2.9.0
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -635,7 +635,7 @@
      *
      *   smallBow          (B1)  bar = draw, three circles = stacked arrows
      *   mediumBow         (B2)  one circle, fills as you draw, green when full
-     *   largeBow          (B3)  same single circle
+     *   largeBow          (B3)  same bar and circle
      *   smallCrossbow     (B4)  bar + one circle = reload after each shot
      *   repeatingCrossbow (B5)  bar = reloading; once it is full, one circle
      *                           per arrow in the box (10), and they drop away
@@ -695,7 +695,7 @@
       switch (type) {
         case 'mediumBow': case 'largeBow':
           if (typeof w.fireAmount01 !== 'number' || w.fireAmount01 <= 0.001) return null;
-          return { bar: null, pips: 1, lit: 0, part: w.fireAmount01 };
+          return { bar: w.fireAmount01, pips: 1, lit: w.fireAmount01 >= 0.999 ? 1 : 0, part: 0 };
 
         case 'smallCrossbow': {
           if (typeof w.getArrowReadyMs !== 'function' || typeof now !== 'number') return null;
@@ -745,6 +745,138 @@
     (function chargeLoop() {
       chargeTick();
       requestAnimationFrame(chargeLoop);
+    })();
+
+    /* ================================================================ *
+     * Arrow trail colour - three more Settings options
+     *
+     * The game already draws a faint white trail behind every arrow (a
+     * per-arrow clone of its arrowTrail shader material, arrow.trailMat).
+     * Rather than draw a second one, this patches that clone's fragment
+     * shader so its final colour comes from a uniform we own, then feeds
+     * that uniform the chosen colour and strength. Your own arrows only;
+     * everyone else's stay as the game draws them.
+     * ================================================================ */
+
+    var TRAIL_KEY = 'narrowone.settingsstats.arrowtrail';
+    var TRAIL_COLOR_KEY = 'narrowone.settingsstats.arrowtrail.color';
+    var TRAIL_STR_KEY = 'narrowone.settingsstats.arrowtrail.strength';
+    function trailColor() {
+      try {
+        var c = localStorage.getItem(TRAIL_COLOR_KEY);
+        if (c && /^#[0-9a-f]{6}$/i.test(c)) return c;
+      } catch (e) {}
+      return '#ff4d4d';
+    }
+    function trailStrength() {
+      var n = 2;
+      try { n = parseFloat(localStorage.getItem(TRAIL_STR_KEY)); } catch (e) {}
+      return isFinite(n) ? Math.max(1, Math.min(5, n)) : 2;
+    }
+
+    function addSettingsRow(dialog, marker, label, build) {
+      if (dialog.querySelector('[data-' + marker + ']')) return null;
+      var anchor = null, last = null;
+      dialog.querySelectorAll('.settings-item').forEach(function (row) {
+        var t = row.querySelector('.settings-item-text');
+        if (t && t.textContent.trim() === 'Show ping and fps') anchor = row;
+        if (row.dataset.nssTags || row.dataset.nssFeed || row.dataset.nssCharge ||
+            row.dataset.nssTrail || row.dataset.nssTrailColor || row.dataset.nssTrailStr) last = row;
+      });
+      anchor = last || anchor;
+      if (!anchor) return null;
+      var row = document.createElement('label');
+      row.className = 'settings-item';
+      row.setAttribute('data-' + marker, '1');
+      var text = document.createElement('div');
+      text.className = 'settings-item-text';
+      text.textContent = label;
+      row.appendChild(text);
+      build(row);
+      anchor.parentNode.insertBefore(row, anchor.nextSibling);
+      return row;
+    }
+
+    function addTrailOptions(dialog) {
+      addSettingsRow(dialog, 'nss-trail', 'Arrow trail color', function (row) {
+        var box = document.createElement('input');
+        box.type = 'checkbox'; box.tabIndex = -1;
+        box.className = 'dialog-checkbox-input wrinkledPaper';
+        box.style.setProperty('--wrinkled-paper-seed', String(Math.floor(Math.random() * 99999)));
+        box.checked = flagOn(TRAIL_KEY);
+        box.addEventListener('change', function () { setFlag(TRAIL_KEY, box.checked); });
+        row.appendChild(box);
+      });
+      addSettingsRow(dialog, 'nss-trail-color', 'Trail color', function (row) {
+        var pick = document.createElement('input');
+        pick.type = 'color'; pick.tabIndex = -1;
+        pick.value = trailColor();
+        pick.style.cssText = 'width:56px;height:28px;padding:0;border:none;background:none;cursor:pointer;';
+        pick.addEventListener('input', function () {
+          try { localStorage.setItem(TRAIL_COLOR_KEY, pick.value); } catch (e) {}
+        });
+        row.appendChild(pick);
+      });
+      addSettingsRow(dialog, 'nss-trail-str', 'Trail strength', function (row) {
+        var wrap = document.createElement('div');
+        wrap.className = 'settings-item-slider';
+        var input = document.createElement('input');
+        input.className = 'dialog-range-input';
+        input.type = 'range'; input.min = 1; input.max = 5; input.step = 0.5; input.tabIndex = -1;
+        input.value = trailStrength();
+        var val = document.createElement('div');
+        val.className = 'settings-item-slider-value';
+        val.textContent = trailStrength() + 'x';
+        input.addEventListener('input', function () {
+          val.textContent = input.value + 'x';
+          try { localStorage.setItem(TRAIL_STR_KEY, input.value); } catch (e) {}
+        });
+        wrap.appendChild(input); wrap.appendChild(val); row.appendChild(wrap);
+      });
+    }
+
+    var FRAG_OLD = 'gl_FragColor = LinearTosRGB(vec4(col, alpha));';
+    var trailPatched = new WeakSet();
+    function patchTrailMaterial(m) {
+      if (trailPatched.has(m)) return !!(m.uniforms && m.uniforms.nssOn);
+      trailPatched.add(m);
+      var fs = m.fragmentShader;
+      if (typeof fs !== 'string' || fs.indexOf(FRAG_OLD) < 0 || fs.indexOf('void main(){') < 0 ||
+          !m.uniforms || !m.uniforms.colorMultiplier) return false;
+      m.fragmentShader = fs
+        .replace('void main(){', 'uniform vec3 nssTint;\nuniform float nssOn;\nuniform float nssStr;\nvoid main(){')
+        .replace(FRAG_OLD, 'if (nssOn > 0.5) { col = nssTint; alpha = clamp(alpha * nssStr, 0.0, 1.0); }\n' + FRAG_OLD);
+      m.uniforms.nssTint = { value: m.uniforms.colorMultiplier.value.clone() };
+      m.uniforms.nssOn = { value: 0 };
+      m.uniforms.nssStr = { value: 1 };
+      m.needsUpdate = true;
+      return true;
+    }
+    function srgbToLinear(v) { return Math.pow(v / 255, 2.2); }
+
+    function trailTick() {
+      var ag = currentGame(), arrows = ag && ag.arrowManager && ag.arrowManager.arrows;
+      var me = findPlayer();
+      if (!arrows || !me || typeof arrows.forEach !== 'function') return;
+      var on = flagOn(TRAIL_KEY), hex = trailColor(), str = trailStrength();
+      var r = srgbToLinear(parseInt(hex.substr(1, 2), 16)),
+          g = srgbToLinear(parseInt(hex.substr(3, 2), 16)),
+          b = srgbToLinear(parseInt(hex.substr(5, 2), 16));
+      function each(a) {
+        if (!a || a.shotBy !== me || !a.trailMat) return;
+        if (!patchTrailMaterial(a.trailMat)) return;
+        var u = a.trailMat.uniforms;
+        u.nssOn.value = on ? 1 : 0;
+        u.nssStr.value = str;
+        u.nssTint.value.set(r, g, b);
+      }
+      arrows.forEach(function (v) {
+        if (v && typeof v.forEach === 'function' && !v.trailMat) v.forEach(each); else each(v);
+      });
+    }
+    (function trailLoop() {
+      try { trailTick(); } catch (e) {}
+      requestAnimationFrame(trailLoop);
     })();
 
     /* ---- kill feed ---- */
@@ -1044,6 +1176,7 @@
             widenSettingsDialog(node);
             addNameTagOption(node);
             addFeedAndChargeOptions(node);
+            addTrailOptions(node);
             addFpsOption(node);
             enrichProfileDialog(node);
           }, 0);
