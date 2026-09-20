@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.10.0
+// @version      2.10.1
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -960,7 +960,9 @@
         u.nssOn.value = on ? 1 : 0;
         u.nssRainbow.value = rainbow ? 1 : 0;
         u.nssStr.value = str;
-        u.nssTint.value.set(r, g, b);
+        var tv = u.nssTint.value;
+        if (typeof tv.setRGB === "function") tv.setRGB(r, g, b);   // three.Color: set(r,g,b) would misread r as a hex number
+        else tv.set(r, g, b);
       }
       arrows.forEach(function (v) {
         if (v && typeof v.forEach === 'function' && !v.shotBy) v.forEach(each); else each(v);
