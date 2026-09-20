@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Spectator Cam
 // @namespace    narrowone-spectator-cam
-// @version      1.1.0
+// @version      1.2.0
 // @description  While you're spectating a Narrow One match: lock onto a player (chase or first person) and ride their arrows, on top of the game's own free fly. Does nothing while you're playing.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -348,9 +348,11 @@
     /* ---- state ---- */
 
     var state = { target: null, mode: 0, lastArrow: null, lastArrowAt: 0 };
+    var orbit = { yaw: 0, pitch: 0, zoom: 1 };     // your mouse's offset from the default view
+    function resetOrbit(keepZoom) { orbit.yaw = 0; orbit.pitch = 0; if (!keepZoom) orbit.zoom = 1; }
     var ARROW_LINGER_MS = 1500;   // keep riding an arrow a moment after it lands
 
-    function release() { state.target = null; state.lastArrow = null; restoreVisuals(); }
+    function release() { state.target = null; state.lastArrow = null; resetOrbit(); restoreVisuals(); }
 
     function cycle(dir) {
       var list = targets();
@@ -358,6 +360,7 @@
       var i = list.indexOf(state.target);
       i = i === -1 ? (dir > 0 ? 0 : list.length - 1) : (i + dir + list.length) % list.length;
       state.target = list[i];
+      resetOrbit(true);                // new subject: back behind them, keep your zoom
       state.lastArrow = null;
     }
 
@@ -380,10 +383,10 @@
         if (ap && d) {
           var len = Math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z) || 1;
           var dx = d.x / len, dy = d.y / len, dz = d.z / len;
-          return {
-            pos: { x: ap.x - dx * 2.5, y: ap.y - dy * 2.5 + 0.6, z: ap.z - dz * 2.5 },
-            look: { x: ap.x + dx * 8, y: ap.y + dy * 8, z: ap.z + dz * 8 }
-          };
+          // Sit behind it along its own line of flight, a little above, then
+          // let the mouse swing round it from there. Aim at the arrow itself
+          // so it stays centred whatever angle you pick.
+          return orbitShot(ap, { x: -dx, y: 0, z: -dz }, Math.asin(-dy) + 0.24, ARROW_DIST);
         }
         mode = 'Chase';   // nothing in the air - watch the shooter until they fire
       }
@@ -398,11 +401,66 @@
       var eye = eyeOf(pl);
       var vq = viewQuat(pl);
       var f = vq ? forwardOf(vq) : { x: 0, y: 0, z: -1 };
-      var fl = Math.sqrt(f.x * f.x + f.z * f.z) || 1;   // stay level - don't dive with their pitch
-      return {
-        pos: { x: eye.x - (f.x / fl) * 4, y: eye.y + 1.4, z: eye.z - (f.z / fl) * 4 },
-        look: eye
-      };
+      // stay level - don't dive with their pitch
+      return orbitShot(eye, { x: -f.x, y: 0, z: -f.z }, CHASE_PITCH, CHASE_DIST);
+    }
+
+    /* ---- orbit and zoom ---- */
+
+    var CHASE_DIST = 4.2, CHASE_PITCH = 0.34;   // the old fixed 4 back / 1.4 up
+    var ARROW_DIST = 2.6;
+    var ZOOM_MIN = 0.35, ZOOM_MAX = 14;
+
+    /**
+     * Put the camera on a sphere around `center` and aim it at the centre.
+     *
+     * `behind` is the direction that counts as "behind" (only its horizontal
+     * part is used), `basePitch` how far up from level the default view sits.
+     * The mouse adds to both - orbit.yaw swings round, orbit.pitch tilts up
+     * and down - and orbit.zoom multiplies the distance, so the default view is
+     * exactly what you had before until you touch anything.
+     */
+    function orbitShot(center, behind, basePitch, baseDist) {
+      var hl = Math.sqrt(behind.x * behind.x + behind.z * behind.z);
+      var theta = (hl > 1e-6 ? Math.atan2(behind.x, behind.z) : 0) + orbit.yaw;
+      var pitch = Math.max(-1.25, Math.min(1.45, basePitch + orbit.pitch));
+      var dist = baseDist * orbit.zoom;
+      var cp = Math.cos(pitch);
+      var dir = { x: Math.sin(theta) * cp, y: Math.sin(pitch), z: Math.cos(theta) * cp };
+      var pos = pullInFromWalls(center, dir, dist);
+      return { pos: pos, look: center };
+    }
+
+    /**
+     * Stop the camera ending up inside a wall when you swing round behind
+     * geometry: cast from the target out toward the camera with the game's
+     * own wall raycast and stop just short of whatever it hits. Skipped
+     * quietly if the game's physics isn't reachable.
+     */
+    function pullInFromWalls(center, dir, dist) {
+      var far = { x: center.x + dir.x * dist, y: center.y + dir.y * dist, z: center.z + dir.z * dist };
+      try {
+        var ag = currentGame(), physics = ag && ag.physics;
+        var proto = ag && ag.players && (function () { var v = null; ag.players.forEach(function (p) { if (!v && p && p.pos) v = p.pos; }); return v; })();
+        if (!physics || !proto || typeof proto.clone !== 'function' ||
+            typeof physics.getRayCastCache !== 'function' || typeof physics.rayCastMapColliders !== 'function') return far;
+        var a = proto.clone(); a.x = center.x; a.y = center.y; a.z = center.z;
+        var b = proto.clone(); b.x = far.x; b.y = far.y; b.z = far.z;
+        var ray = physics.getRayCastCache(a, b);
+        var hit = ray && physics.rayCastMapColliders(ray, blocksWall);
+        if (hit && typeof hit.dist === 'number') {
+          var d = Math.max(0.6, hit.dist - 0.35);
+          return { x: center.x + dir.x * d, y: center.y + dir.y * d, z: center.z + dir.z * d };
+        }
+      } catch (e) {}
+      return far;
+    }
+
+    /** Solid walls only - the same test the game uses for what stops an arrow. */
+    function blocksWall(hit) {
+      var c = hit && hit.collider;
+      return !!c && !c.ignoreArrows && !(c.excludeTeamId >= 0) &&
+        !(typeof c.isTriggerCollider === 'function' && c.isTriggerCollider());
     }
 
     /** Overwrite the three.js camera with a computed shot. */
@@ -551,10 +609,38 @@
       else if (name === 'release') release();
       else if (name === 'mode') {
         state.mode = (state.mode + 1) % MODES.length;
+        resetOrbit(true);                                      // new view: back to its default angle
         if (!state.target) cycle(1);
       }
       renderHud();
     }, true);
+
+    /* ---- mouse: swing round the subject, wheel to zoom ---- */
+
+    /** Only the views that orbit a point - first person is fixed to their eyes. */
+    function orbiting() {
+      return !!state.target && MODES[state.mode] !== 'First person' && isSpectator(me());
+    }
+
+    var ORBIT_SPEED = 0.005;   // radians per pixel of mouse movement
+
+    window.addEventListener('mousemove', function (e) {
+      if (!orbiting()) return;
+      // Pointer locked (the normal in-game state) reports raw movement; with a
+      // free cursor only orbit while the left button is held, so clicking
+      // around a dialog doesn't spin the view.
+      if (!document.pointerLockElement && !(e.buttons & 1)) return;
+      orbit.yaw -= (e.movementX || 0) * ORBIT_SPEED;
+      orbit.pitch += (e.movementY || 0) * ORBIT_SPEED;
+    }, true);
+
+    window.addEventListener('wheel', function (e) {
+      if (!orbiting()) return;
+      // Swallow it: while spectating the game uses the wheel for fly speed, and
+      // scrolling to zoom shouldn't also make you faster.
+      e.preventDefault(); e.stopPropagation();
+      orbit.zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, orbit.zoom * (e.deltaY > 0 ? 1.12 : 1 / 1.12)));
+    }, { capture: true, passive: false });
 
     /* ---- a small HUD so you know what you're locked onto ---- */
 
@@ -573,7 +659,8 @@
       var k = function (n) { return keyLabel(keyFor(n)); };
       hudEl.textContent = state.target
         ? 'Watching ' + (state.target.playerName || 'player') + ' · ' + MODES[state.mode] +
-          '   [' + k('prev') + '/' + k('next') + '] switch  [' + k('mode') + '] view  [' + k('release') + '] free'
+          '   [' + k('prev') + '/' + k('next') + '] switch  [' + k('mode') + '] view  [' + k('release') + '] free' +
+          (MODES[state.mode] === 'First person' ? '' : '   mouse: orbit  wheel: zoom')
         : 'Spectating - [' + k('next') + '] lock onto a player  [' + k('mode') + '] choose a view';
     }
     setInterval(renderHud, 300);

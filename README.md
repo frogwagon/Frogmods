@@ -139,6 +139,10 @@ game wasn't willing to show you.
 - First person hides the watched player's body but keeps the weapon they are
   holding, so you see their real bow or melee weapon, and hides your own
   weapon so it is not drawn over the view.
+- **Mouse** swings the camera round the player or arrow from any angle, and the
+  **wheel** zooms (about a third of the default distance out to 14x). With a
+  free cursor, hold the left button to orbit. First person stays fixed to their
+  eyes. The camera stops short of walls instead of going inside them.
 - Arrow cam rides the locked player's latest arrow and stays on it for a
   moment after it lands.
 - Needs "Fly when spectating" on (it is by default) and the same one-off cache
