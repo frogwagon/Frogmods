@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.9.1
+// @version      2.10.0
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -585,6 +585,7 @@
 
     var FEED_KEY = 'narrowone.settingsstats.killfeed';
     var CHARGE_KEY = 'narrowone.settingsstats.bowcharge';
+    var FOG_KEY = 'narrowone.settingsstats.antifog';
     function flagOn(key) {
       try { return localStorage.getItem(key) === '1'; } catch (e) { return false; }
     }
@@ -599,7 +600,7 @@
       dialog.querySelectorAll('.settings-item').forEach(function (row) {
         var t = row.querySelector('.settings-item-text');
         if (t && t.textContent.trim() === 'Show ping and fps') anchor = row;
-        if (row.dataset.nssTags || row.dataset.nssFeed || row.dataset.nssCharge) last = row;
+        if (row.dataset.nssTags || row.dataset.nssFeed || row.dataset.nssCharge || row.dataset.nssFog) last = row;
       });
       anchor = last || anchor;
       if (!anchor) return;
@@ -624,6 +625,7 @@
     function addFeedAndChargeOptions(dialog) {
       addToggleRow(dialog, 'nss-feed', 'Kill feed', FEED_KEY);
       addToggleRow(dialog, 'nss-charge', 'Bow charge under crosshair', CHARGE_KEY);
+      addToggleRow(dialog, 'nss-fog', 'Anti-fog', FOG_KEY);
     }
 
     /* ---- bow charge ---- */
@@ -747,6 +749,56 @@
       requestAnimationFrame(chargeLoop);
     })();
 
+    /* ---- anti-fog ---- */
+
+    /**
+     * Fog is a handful of uniforms (fogAmount, fogHeightAmount and its
+     * min/max) that the game copies onto every material whenever the map's
+     * weather is applied:
+     *
+     *   materials.applyWeatherParams({... fogAmount, fogHeightAmount, ...})
+     *
+     * With the option on, that call is wrapped so the fog values go in as
+     * zero, and a slow sweep zeroes them on any material made since. Turned
+     * off, the last real weather is re-applied, so nothing needs a reload.
+     * Colour grading and sky colours are left alone - only the fog goes.
+     */
+    var fogState = { wrapped: null, last: null };
+    function fogUniformsZero(mats) {
+      for (var m of mats) {
+        var u = m && m.uniforms;
+        if (!u || !u.fogAmount) continue;
+        u.fogAmount.value = 0;
+        if (u.fogHeightAmount) u.fogHeightAmount.value = 0;
+        if (u.fogHeightAmountMin) u.fogHeightAmountMin.value = 0;
+        if (u.fogHeightAmountMax) u.fogHeightAmountMax.value = 0;
+      }
+    }
+    function fogTick() {
+      var g = findGame(), mats = g && g.materials;
+      if (!mats || typeof mats.applyWeatherParams !== 'function' || typeof mats.allMaterials !== 'function') return;
+      if (fogState.wrapped !== mats) {
+        var orig = mats.applyWeatherParams;
+        mats.applyWeatherParams = function (params) {
+          fogState.last = params;
+          if (flagOn(FOG_KEY) && params) {
+            params = Object.assign({}, params, { fogAmount: 0, fogHeightAmount: 0, fogHeightAmountMin: 0, fogHeightAmountMax: 0 });
+          }
+          return orig.call(this, params);
+        };
+        fogState.orig = orig;
+        fogState.wrapped = mats;
+      }
+      if (flagOn(FOG_KEY)) {
+        fogState.wasOn = true;
+        fogUniformsZero(mats.allMaterials());
+      } else if (fogState.wasOn) {
+        fogState.wasOn = false;
+        if (fogState.last) fogState.orig.call(mats, fogState.last);
+      }
+    }
+    setInterval(function () { try { fogTick(); } catch (e) {} }, 400);
+
     /* ================================================================ *
      * Arrow trail colour - three more Settings options
      *
@@ -781,7 +833,7 @@
       dialog.querySelectorAll('.settings-item').forEach(function (row) {
         var t = row.querySelector('.settings-item-text');
         if (t && t.textContent.trim() === 'Show ping and fps') anchor = row;
-        if (row.dataset.nssTags || row.dataset.nssFeed || row.dataset.nssCharge ||
+        if (row.dataset.nssTags || row.dataset.nssFeed || row.dataset.nssCharge || row.dataset.nssFog ||
             row.dataset.nssTrail || row.dataset.nssTrailColor || row.dataset.nssTrailRainbow || row.dataset.nssTrailStr) last = row;
       });
       anchor = last || anchor;
