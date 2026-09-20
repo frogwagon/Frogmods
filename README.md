@@ -108,7 +108,7 @@ binding, not a separate toggle.
 
 **Scoreboard:** team headers read Red team / Blue team (named from your own team's colour, the only one the game exposes), each row has the player's avatar (re-fetched every ~7 seconds while the panel is up, so a changed picture updates), and the weapon-switch bar keeps its normal grey.
 
-**Kill feed (Settings option):** "Kill feed" sits under the name-tag row (off by default) and lists kills in the top-right as `Killer → Victim`, coloured by team, fading after a few seconds. The game never tells the client who killed whom, so this infers it from the scoreboard's own numbers - a player dying, paired with whoever's kill count just went up - and shows "X died" if nobody's count moved. Spectators are left out.
+**Kill feed (Settings option):** "Kill feed" sits under the name-tag row (off by default) and lists kills down the right side (below the flag display) as `Killer → Victim`, coloured by team, fading after a few seconds. The game never tells the client who killed whom, so this infers it from the scoreboard's own numbers - a player dying, paired with whoever's kill count just went up - and shows "X died" if nobody's count moved. Spectators are left out.
 
 **Bow charge (Settings option):** "Bow charge under crosshair" draws a small bar under your crosshair that fills as you draw (turning green when full) with three pips for the stacked arrows and the next one filling in. Reads the bow's own draw state; only shown while you are alive, not spectating, and drawing.
 
