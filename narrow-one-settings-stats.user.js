@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.11.1
+// @version      2.12.0
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -814,6 +814,10 @@
     var TRAIL_COLOR_KEY = 'narrowone.settingsstats.arrowtrail.color';
     var TRAIL_STR_KEY = 'narrowone.settingsstats.arrowtrail.strength';
     var TRAIL_RAINBOW_KEY = 'narrowone.settingsstats.arrowtrail.rainbow';
+    var TRAIL_TEAM_KEY = 'narrowone.settingsstats.arrowtrail.team';
+    var TRAIL_TEAM_ON_KEY = 'narrowone.settingsstats.arrowtrail.team.on';
+    var TRAIL_ENEMY_KEY = 'narrowone.settingsstats.arrowtrail.enemy';
+    var TRAIL_ENEMY_ON_KEY = 'narrowone.settingsstats.arrowtrail.enemy.on';
     function trailColor() {
       try {
         var c = localStorage.getItem(TRAIL_COLOR_KEY);
@@ -859,7 +863,7 @@
         box.addEventListener('change', function () { setFlag(TRAIL_KEY, box.checked); });
         row.appendChild(box);
       });
-      addSettingsRow(dialog, 'nss-trail-color', 'Trail color', function (row) {
+      addSettingsRow(dialog, 'nss-trail-color', 'Your trail color', function (row) {
         var pick = document.createElement('input');
         pick.type = 'color'; pick.tabIndex = -1;
         pick.value = trailColor();
@@ -869,6 +873,30 @@
         });
         row.appendChild(pick);
       });
+      // Teammates' and enemies' arrows: an on/off box and a colour in one row each.
+      function groupRow(marker, label, onKey, colorKey, fallback) {
+        addSettingsRow(dialog, marker, label, function (row) {
+          var pick = document.createElement('input');
+          pick.type = 'color'; pick.tabIndex = -1;
+          pick.value = storedColor(colorKey, fallback);
+          pick.style.cssText = 'width:56px;height:28px;padding:0;border:none;background:none;cursor:pointer;margin-right:8px;';
+          pick.addEventListener('input', function () {
+            try { localStorage.setItem(colorKey, pick.value); } catch (e) {}
+          });
+          var box = document.createElement('input');
+          box.type = 'checkbox'; box.tabIndex = -1;
+          box.className = 'dialog-checkbox-input wrinkledPaper';
+          box.style.setProperty('--wrinkled-paper-seed', String(Math.floor(Math.random() * 99999)));
+          box.checked = flagOn(onKey);
+          box.addEventListener('change', function () { setFlag(onKey, box.checked); });
+          var wrap = document.createElement('div');
+          wrap.style.cssText = 'display:flex;align-items:center;';
+          wrap.appendChild(pick); wrap.appendChild(box);
+          row.appendChild(wrap);
+        });
+      }
+      groupRow('nss-trail-team', 'Teammate trail color', TRAIL_TEAM_ON_KEY, TRAIL_TEAM_KEY, '#3bff6a');
+      groupRow('nss-trail-enemy', 'Enemy trail color', TRAIL_ENEMY_ON_KEY, TRAIL_ENEMY_KEY, '#ff3b3b');
       addSettingsRow(dialog, 'nss-trail-rainbow', 'Rainbow trail', function (row) {
         var box = document.createElement('input');
         box.type = 'checkbox'; box.tabIndex = -1;
@@ -944,24 +972,34 @@
       var ag = currentGame(), arrows = ag && ag.arrowManager && ag.arrowManager.arrows;
       var me = findPlayer();
       if (!arrows || !me || typeof arrows.forEach !== 'function') return;
-      var on = flagOn(TRAIL_KEY), rainbow = flagOn(TRAIL_RAINBOW_KEY), hex = trailColor(), str = trailStrength();
-      var r = srgbToLinear(parseInt(hex.substr(1, 2), 16)),
-          g = srgbToLinear(parseInt(hex.substr(3, 2), 16)),
-          b = srgbToLinear(parseInt(hex.substr(5, 2), 16));
+      var str = trailStrength();
+      function lin(hex) {
+        return [srgbToLinear(parseInt(hex.substr(1, 2), 16)),
+                srgbToLinear(parseInt(hex.substr(3, 2), 16)),
+                srgbToLinear(parseInt(hex.substr(5, 2), 16))];
+      }
+      // One setting per shooter group: you, your teammates, the other team.
+      var groups = {
+        mine:  { on: flagOn(TRAIL_KEY), rainbow: flagOn(TRAIL_RAINBOW_KEY), rgb: lin(trailColor()) },
+        team:  { on: flagOn(TRAIL_TEAM_ON_KEY), rainbow: false, rgb: lin(storedColor(TRAIL_TEAM_KEY, '#3bff6a')) },
+        enemy: { on: flagOn(TRAIL_ENEMY_ON_KEY), rainbow: false, rgb: lin(storedColor(TRAIL_ENEMY_KEY, '#ff3b3b')) }
+      };
       function each(a) {
         if (!a || typeof a !== 'object') return;
         trailDebug.arrows++;
-        if (a.shotBy !== me) return;
-        trailDebug.mine++;
+        var shooter = a.shotBy;
+        if (!shooter) return;
+        var grp = shooter === me ? groups.mine : (shooter.teamId === me.teamId ? groups.team : groups.enemy);
+        if (shooter === me) trailDebug.mine++;
         var m = (a.trailObj && a.trailObj.material) || a.trailMat;
         if (!m || !patchTrailMaterial(m)) return;
         var u = m.uniforms;
-        u.nssOn.value = on ? 1 : 0;
-        u.nssRainbow.value = rainbow ? 1 : 0;
+        u.nssOn.value = grp.on ? 1 : 0;
+        u.nssRainbow.value = grp.rainbow ? 1 : 0;
         u.nssStr.value = str;
         var tv = u.nssTint.value;
-        if (typeof tv.setRGB === "function") tv.setRGB(r, g, b);   // three.Color: set(r,g,b) would misread r as a hex number
-        else tv.set(r, g, b);
+        if (typeof tv.setRGB === "function") tv.setRGB(grp.rgb[0], grp.rgb[1], grp.rgb[2]);   // three.Color: set(r,g,b) would misread r as a hex number
+        else tv.set(grp.rgb[0], grp.rgb[1], grp.rgb[2]);
       }
       arrows.forEach(function (v) {
         if (v && typeof v.forEach === 'function' && !v.shotBy) v.forEach(each); else each(v);
