@@ -102,7 +102,7 @@ this browser session, carried across matches) right into that same panel.
 kills/deaths/flags/K-D/ping/fps, a live breakdown of every way you've
 scored a point this match (kills, headshots, flag captures, assists, ... -
 the game's own scoring categories, not a guess), the running session, and
-coins earned this round once the server actually sends them at round end -
+a centred coin counter under the stats (your balance, plus this round and last round) -
 for exactly as long as Tab is held, hooked into the game's own Tab
 binding, not a separate toggle.
 

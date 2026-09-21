@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.12.1
+// @version      2.13.0
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -401,6 +401,35 @@
       var ag = findActiveGame();
       return ag ? (ag.gameEndReceivedCoins || 0) : 0;
     }
+
+    /**
+     * Coins. The server only sends a round's reward when the round ends
+     * (receivedGameEndAccountStats -> gameEndReceivedCoins, and it hands over
+     * the new balance to shopState.ownedCoins), and the game object holding
+     * gameEndReceivedCoins is gone by the next round - so reading only that
+     * showed a dash nearly all the time. The balance itself is always there,
+     * so this shows it, and works out "this round" as how far it has moved
+     * since the round began (or the game's own figure, whichever is larger),
+     * keeping the last finished round after the game object is replaced.
+     */
+    var coinState = { game: null, base: null, gain: 0, last: 0 };
+    function ownedCoins() {
+      var g = findGame(), s = g && g.shopState;
+      return s && typeof s.ownedCoins === 'number' ? s.ownedCoins : null;
+    }
+    function coinTick() {
+      var owned = ownedCoins(), ag = currentGame();
+      if (ag !== coinState.game) {
+        if (coinState.game && coinState.gain > 0) coinState.last = coinState.gain;
+        coinState.game = ag; coinState.base = owned; coinState.gain = 0;
+      }
+      if (owned !== null) {
+        if (coinState.base === null || owned < coinState.base) coinState.base = owned;   // spent some in the shop
+        var fromGame = ag ? (ag.gameEndReceivedCoins || 0) : 0;
+        coinState.gain = Math.max(owned - coinState.base, fromGame);
+      }
+    }
+    setInterval(function () { try { coinTick(); } catch (e) {} }, 500);
 
     /* ================================================================ *
      * 1. Widen the native settings sliders in place
@@ -1654,11 +1683,15 @@
       // toggle) - this has to clear all of that or it renders invisibly
       // behind it.
       '#nss-panel { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 200; ' +
-        'display: flex; gap: 22px; align-items: flex-start; ' +
+        'display: flex; flex-wrap: wrap; gap: 22px; align-items: flex-start; justify-content: center; ' +
         'background: rgba(15,15,20,.72); color: #fff; padding: 14px 20px; border-radius: 12px; ' +
         'font: 600 13px system-ui, sans-serif; pointer-events: none; max-height: 90vh; overflow: hidden; }',
       '#nss-panel .nss-col { min-width: 170px; }',
       '#nss-panel .nss-players { min-width: 340px; }',
+      '#nss-panel .nss-coins { flex: 0 0 100%; text-align: center; margin-top: -6px; }',
+      '#nss-panel .nss-coins .nss-head { margin-top: 0; }',
+      '#nss-panel .nss-coins-total { font-size: 26px; font-weight: 700; line-height: 1.2; }',
+      '#nss-panel .nss-coins-sub { opacity: .65; font-size: 12px; font-weight: 400; }',
       '#nss-panel .nss-row { display:flex; justify-content:space-between; gap: 16px; padding: 2px 0; }',
       '#nss-panel .nss-row span { opacity: .6; font-weight: 400; }',
       '#nss-panel .nss-head { opacity: .5; font-size: 11px; text-transform: uppercase; ' +
@@ -1940,12 +1973,15 @@
       html += panelRow('Kills', totals.kills) + panelRow('Deaths', totals.deaths) +
         panelRow('K/D', sKd);
 
-      // Zero/blank until the server actually sends round-end rewards - a
-      // number here before then would just be last round's, or made up.
-      var coins = coinsEarned();
-      html += '<div class="nss-head">Coins</div>' +
-        panelRow('This round', coins > 0 ? coins : '-');
       html += '</div>';
+
+      // Coin counter: full width, centred under the stats. Balance is always
+      // real; the round figures only move once the server sends the reward.
+      var owned = ownedCoins();
+      html += '<div class="nss-coins"><div class="nss-head">Coins</div>' +
+        '<div class="nss-coins-total">' + (owned === null ? '-' : owned.toLocaleString()) + '</div>' +
+        '<div class="nss-coins-sub">This round ' + (coinState.gain > 0 ? '+' + coinState.gain : '-') +
+        (coinState.last > 0 ? ' &nbsp;&middot;&nbsp; Last round +' + coinState.last : '') + '</div></div>';
 
       panelEl.innerHTML = html;
     }
