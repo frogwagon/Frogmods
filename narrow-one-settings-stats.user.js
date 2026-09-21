@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.11.0
+// @version      2.11.1
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -1057,12 +1057,12 @@
     }
 
     var hb = { scene: null, kit: null, mats: null, geo: null, shapes: new Map() };
-    var hitboxDebug = { drawn: 0, error: '' };
+    var hitboxDebug = { drawn: 0, error: '', scene: '', players: 0 };
 
     /** Borrow three.js's classes from objects the game already made. */
     function hitboxKit(scene) {
       var mesh = null;
-      scene.traverse(function (o) { if (!mesh && o.isMesh && o.geometry && o.geometry.attributes && o.geometry.attributes.position) mesh = o; });
+      scene.traverse(function (o) { if (!mesh && o.isMesh && !o.isSkinnedMesh && !o.isInstancedMesh && o.geometry && o.geometry.isBufferGeometry && o.geometry.attributes && o.geometry.attributes.position) mesh = o; });
       var g = findGame();
       var trailMat = g && g.materials && g.materials.arrowTrailMat;
       if (!mesh || !trailMat) return null;
@@ -1124,8 +1124,11 @@
 
     function hitboxTick() {
       var ag = currentGame();
-      if (!flagOn(HB_KEY) || !ag || !ag.scene) { if (hb.shapes.size) hitboxClear(); return; }
-      var scene = ag.scene;
+      // ag.scene is only the MAP group; arrows and everything else live in the main scene the game renders.
+      var gm = findGame();
+      var scene = (gm && gm.scene && typeof gm.scene.traverse === "function") ? gm.scene : (ag && ag.scene);
+      hitboxDebug.scene = scene === (ag && ag.scene) ? "map group" : "main scene";
+      if (!flagOn(HB_KEY) || !ag || !scene) { if (hb.shapes.size) hitboxClear(); return; }
       if (hb.scene !== scene) {
         hitboxClear();
         hb.scene = scene; hb.kit = hitboxKit(scene);
@@ -1167,7 +1170,7 @@
         list.forEach(function (mesh) { if (mesh.parent) mesh.parent.remove(mesh); });
         hb.shapes.delete(pl);
       });
-      hitboxDebug.drawn = drawn;
+      hitboxDebug.drawn = drawn; hitboxDebug.players = live.size;
     }
     (function hitboxLoop() {
       try { hitboxTick(); } catch (e) { hitboxDebug.error = String(e && e.message || e); }
