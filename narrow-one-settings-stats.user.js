@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.10.1
+// @version      2.11.0
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -600,7 +600,7 @@
       dialog.querySelectorAll('.settings-item').forEach(function (row) {
         var t = row.querySelector('.settings-item-text');
         if (t && t.textContent.trim() === 'Show ping and fps') anchor = row;
-        if (row.dataset.nssTags || row.dataset.nssFeed || row.dataset.nssCharge || row.dataset.nssFog) last = row;
+        if (Object.keys(row.dataset).some(function (k) { return k.indexOf('nss') === 0; })) last = row;
       });
       anchor = last || anchor;
       if (!anchor) return;
@@ -833,8 +833,7 @@
       dialog.querySelectorAll('.settings-item').forEach(function (row) {
         var t = row.querySelector('.settings-item-text');
         if (t && t.textContent.trim() === 'Show ping and fps') anchor = row;
-        if (row.dataset.nssTags || row.dataset.nssFeed || row.dataset.nssCharge || row.dataset.nssFog ||
-            row.dataset.nssTrail || row.dataset.nssTrailColor || row.dataset.nssTrailRainbow || row.dataset.nssTrailStr) last = row;
+        if (Object.keys(row.dataset).some(function (k) { return k.indexOf('nss') === 0; })) last = row;
       });
       anchor = last || anchor;
       if (!anchor) return null;
@@ -971,6 +970,208 @@
     (function trailLoop() {
       try { trailTick(); } catch (e) { trailDebug.error = String(e && e.message || e); }
       requestAnimationFrame(trailLoop);
+    })();
+
+    /* ================================================================ *
+     * Hitboxes - Settings options
+     *
+     * Every player's physics body is three spheres (rigidBody.colliders):
+     * feet (r .4), body (r .5) and head (r .3), each with a center and a
+     * radius - the exact shapes the game tests arrows against. This draws
+     * those spheres as real 3D objects in the game's own scene, either as
+     * see-through outlines or as filled translucent shapes.
+     *
+     * They are ordinary scene objects that write no depth but do test it,
+     * so walls and terrain hide them exactly like they hide the player
+     * - nothing is shown through solid geometry. Your own body and
+     * spectators are skipped.
+     *
+     * The game exposes no three.js, so the classes are borrowed from what
+     * is already in its scene: Mesh from any mesh, BufferGeometry and
+     * BufferAttribute from that mesh's geometry, ShaderMaterial from the
+     * arrow trail material.
+     * ================================================================ */
+
+    var HB_KEY = 'narrowone.settingsstats.hitbox';
+    var HB_FILL_KEY = 'narrowone.settingsstats.hitbox.fill';
+    var HB_ENEMY_KEY = 'narrowone.settingsstats.hitbox.enemy';
+    var HB_TEAM_KEY = 'narrowone.settingsstats.hitbox.team';
+    var HB_OPACITY_KEY = 'narrowone.settingsstats.hitbox.opacity';
+    function storedColor(key, fallback) {
+      try {
+        var c = localStorage.getItem(key);
+        if (c && /^#[0-9a-f]{6}$/i.test(c)) return c;
+      } catch (e) {}
+      return fallback;
+    }
+    function hitboxOpacity() {
+      var n = 0.35;
+      try { n = parseFloat(localStorage.getItem(HB_OPACITY_KEY)); } catch (e) {}
+      return isFinite(n) ? Math.max(0.1, Math.min(1, n)) : 0.35;
+    }
+
+    function addHitboxOptions(dialog) {
+      function checkbox(marker, label, key) {
+        addSettingsRow(dialog, marker, label, function (row) {
+          var box = document.createElement('input');
+          box.type = 'checkbox'; box.tabIndex = -1;
+          box.className = 'dialog-checkbox-input wrinkledPaper';
+          box.style.setProperty('--wrinkled-paper-seed', String(Math.floor(Math.random() * 99999)));
+          box.checked = flagOn(key);
+          box.addEventListener('change', function () { setFlag(key, box.checked); });
+          row.appendChild(box);
+        });
+      }
+      function colorRow(marker, label, key, fallback) {
+        addSettingsRow(dialog, marker, label, function (row) {
+          var pick = document.createElement('input');
+          pick.type = 'color'; pick.tabIndex = -1;
+          pick.value = storedColor(key, fallback);
+          pick.style.cssText = 'width:56px;height:28px;padding:0;border:none;background:none;cursor:pointer;';
+          pick.addEventListener('input', function () {
+            try { localStorage.setItem(key, pick.value); } catch (e) {}
+          });
+          row.appendChild(pick);
+        });
+      }
+      checkbox('nss-hb', 'Hitboxes', HB_KEY);
+      checkbox('nss-hb-fill', 'Hitboxes: filled (off = outline)', HB_FILL_KEY);
+      colorRow('nss-hb-enemy', 'Enemy hitbox color', HB_ENEMY_KEY, '#ff3b3b');
+      colorRow('nss-hb-team', 'Team hitbox color', HB_TEAM_KEY, '#3bff6a');
+      addSettingsRow(dialog, 'nss-hb-op', 'Hitbox opacity', function (row) {
+        var wrap = document.createElement('div');
+        wrap.className = 'settings-item-slider';
+        var input = document.createElement('input');
+        input.className = 'dialog-range-input';
+        input.type = 'range'; input.min = 0.1; input.max = 1; input.step = 0.05; input.tabIndex = -1;
+        input.value = hitboxOpacity();
+        var val = document.createElement('div');
+        val.className = 'settings-item-slider-value';
+        val.textContent = Math.round(hitboxOpacity() * 100) + '%';
+        input.addEventListener('input', function () {
+          val.textContent = Math.round(input.value * 100) + '%';
+          try { localStorage.setItem(HB_OPACITY_KEY, input.value); } catch (e) {}
+        });
+        wrap.appendChild(input); wrap.appendChild(val); row.appendChild(wrap);
+      });
+    }
+
+    var hb = { scene: null, kit: null, mats: null, geo: null, shapes: new Map() };
+    var hitboxDebug = { drawn: 0, error: '' };
+
+    /** Borrow three.js's classes from objects the game already made. */
+    function hitboxKit(scene) {
+      var mesh = null;
+      scene.traverse(function (o) { if (!mesh && o.isMesh && o.geometry && o.geometry.attributes && o.geometry.attributes.position) mesh = o; });
+      var g = findGame();
+      var trailMat = g && g.materials && g.materials.arrowTrailMat;
+      if (!mesh || !trailMat) return null;
+      return {
+        Mesh: mesh.constructor,
+        Geometry: mesh.geometry.constructor,
+        Attribute: mesh.geometry.attributes.position.constructor,
+        Material: trailMat.constructor
+      };
+    }
+
+    function unitSphere(kit) {
+      var lat = 8, lon = 14, pos = [], idx = [];
+      for (var i = 0; i <= lat; i++) {
+        var th = Math.PI * i / lat;
+        for (var j = 0; j <= lon; j++) {
+          var ph = 2 * Math.PI * j / lon;
+          pos.push(Math.sin(th) * Math.cos(ph), Math.cos(th), Math.sin(th) * Math.sin(ph));
+        }
+      }
+      for (var a = 0; a < lat; a++) {
+        for (var b = 0; b < lon; b++) {
+          var p = a * (lon + 1) + b, q = p + lon + 1;
+          idx.push(p, q, p + 1, q, q + 1, p + 1);
+        }
+      }
+      var geo = new kit.Geometry();
+      geo.setAttribute('position', new kit.Attribute(new Float32Array(pos), 3));
+      geo.setIndex(idx);
+      return geo;
+    }
+
+    function hitboxMaterial(kit) {
+      var m = new kit.Material({
+        vertexShader: 'void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+        fragmentShader: 'uniform float cr; uniform float cg; uniform float cb; uniform float ca;\n' +
+                        'void main(){ gl_FragColor = vec4(cr, cg, cb, ca); }',
+        uniforms: { cr: { value: 1 }, cg: { value: 0 }, cb: { value: 0 }, ca: { value: 0.35 } },
+        transparent: true, depthWrite: false, depthTest: true
+      });
+      return m;
+    }
+
+    function hitboxClear() {
+      hb.shapes.forEach(function (list) {
+        list.forEach(function (mesh) { if (mesh.parent) mesh.parent.remove(mesh); });
+      });
+      hb.shapes.clear();
+      hitboxDebug.drawn = 0;
+    }
+
+    function setMat(m, hex, alpha, wire) {
+      m.uniforms.cr.value = parseInt(hex.substr(1, 2), 16) / 255;
+      m.uniforms.cg.value = parseInt(hex.substr(3, 2), 16) / 255;
+      m.uniforms.cb.value = parseInt(hex.substr(5, 2), 16) / 255;
+      m.uniforms.ca.value = alpha;
+      m.wireframe = wire;
+    }
+
+    function hitboxTick() {
+      var ag = currentGame();
+      if (!flagOn(HB_KEY) || !ag || !ag.scene) { if (hb.shapes.size) hitboxClear(); return; }
+      var scene = ag.scene;
+      if (hb.scene !== scene) {
+        hitboxClear();
+        hb.scene = scene; hb.kit = hitboxKit(scene);
+        if (!hb.kit) { hitboxDebug.error = 'could not borrow three.js classes from the scene'; hb.scene = null; return; }
+        hb.geo = unitSphere(hb.kit);
+        hb.mats = { enemy: hitboxMaterial(hb.kit), team: hitboxMaterial(hb.kit) };
+        hitboxDebug.error = '';
+      }
+      var fill = flagOn(HB_FILL_KEY);
+      var alpha = fill ? hitboxOpacity() : 1;
+      setMat(hb.mats.enemy, storedColor(HB_ENEMY_KEY, '#ff3b3b'), alpha, !fill);
+      setMat(hb.mats.team, storedColor(HB_TEAM_KEY, '#3bff6a'), alpha, !fill);
+
+      var me = findPlayer(), live = new Set(), drawn = 0;
+      ag.players.forEach(function (pl) {
+        if (!pl || pl === me || pl.dead || isSpectatorPlayer(pl) || !pl.rigidBody || !pl.rigidBody.colliders) return;
+        live.add(pl);
+        var cols = pl.rigidBody.colliders, list = hb.shapes.get(pl);
+        var mat = me && pl.teamId === me.teamId ? hb.mats.team : hb.mats.enemy;
+        if (!list) { list = []; hb.shapes.set(pl, list); }
+        for (var i = 0; i < cols.length; i++) {
+          var mesh = list[i];
+          if (!mesh) {
+            mesh = new hb.kit.Mesh(hb.geo, mat);
+            mesh.renderOrder = 999;
+            mesh.frustumCulled = false;
+            scene.add(mesh);
+            list[i] = mesh;
+          }
+          mesh.material = mat;
+          var c = cols[i].center;
+          mesh.position.set(c.x, c.y, c.z);
+          mesh.scale.set(cols[i].radius, cols[i].radius, cols[i].radius);
+          drawn++;
+        }
+      });
+      hb.shapes.forEach(function (list, pl) {
+        if (live.has(pl)) return;
+        list.forEach(function (mesh) { if (mesh.parent) mesh.parent.remove(mesh); });
+        hb.shapes.delete(pl);
+      });
+      hitboxDebug.drawn = drawn;
+    }
+    (function hitboxLoop() {
+      try { hitboxTick(); } catch (e) { hitboxDebug.error = String(e && e.message || e); }
+      requestAnimationFrame(hitboxLoop);
     })();
 
     /* ---- kill feed ---- */
@@ -1271,6 +1472,7 @@
             addNameTagOption(node);
             addFeedAndChargeOptions(node);
             addTrailOptions(node);
+            addHitboxOptions(node);
             addFpsOption(node);
             enrichProfileDialog(node);
           }, 0);
@@ -1719,6 +1921,7 @@
       resetSession: function () { endSession(); },
       transparentUi: setTransparentUi,
       trailDebug: trailDebug,
+      hitboxDebug: hitboxDebug,
       patchState: patchState
     };
 
