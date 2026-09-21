@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.12.0
+// @version      2.12.1
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -1200,6 +1200,16 @@
           var c = cols[i].center;
           mesh.position.set(c.x, c.y, c.z);
           mesh.scale.set(cols[i].radius, cols[i].radius, cols[i].radius);
+          // The game may switch off automatic matrix updates on its scene, which leaves a
+          // new mesh at the origin as a unit ball. Build both matrices by hand so it is
+          // placed correctly whichever way the scene is updated.
+          if (typeof mesh.updateMatrix === "function") {
+            mesh.matrixAutoUpdate = false;
+            mesh.updateMatrix();
+            if (mesh.matrixWorld && mesh.matrixWorld.copy) mesh.matrixWorld.copy(mesh.matrix);
+            if (scene.matrixWorld && mesh.matrixWorld && mesh.matrixWorld.premultiply) mesh.matrixWorld.premultiply(scene.matrixWorld);
+            mesh.matrixWorldNeedsUpdate = true;
+          }
           drawn++;
         }
       });
