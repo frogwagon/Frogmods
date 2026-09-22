@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.14.0
+// @version      2.14.1
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -531,15 +531,9 @@
       var kdRow = profileStatRow('kills', 'K/D');
       statsEl.appendChild(kdRow.el);
 
-      var sessionRows = {
-        kills: profileStatRow('kills', 'Session Kills'),
-        deaths: profileStatRow('kills', 'Session Deaths'),
-        flags: profileStatRow('flagsCaptured', 'Session Flags'),
-        kd: profileStatRow('kills', 'Session K/D')
-      };
-      Object.keys(sessionRows).forEach(function (k) { statsEl.appendChild(sessionRows[k].el); });
-
-      // The session otherwise runs on across matches and reloads, so give it an end.
+      // The running session itself only shows in the Tab panel now - this
+      // dialog just gets a way to end it, since it otherwise runs on across
+      // matches and reloads with nothing here to say so.
       var endBtn = document.createElement('button');
       endBtn.type = 'button';
       endBtn.tabIndex = -1;
@@ -555,12 +549,6 @@
         var g = findGame();
         var stats = (g && g.profileState && g.profileState.stats) || {};
         kdRow.valueEl.textContent = ratio(Number(stats.kills) || 0, Number(stats.deaths) || 0);
-
-        var totals = liveSessionTotals();
-        sessionRows.kills.valueEl.textContent = totals.kills;
-        sessionRows.deaths.valueEl.textContent = totals.deaths;
-        sessionRows.flags.valueEl.textContent = totals.flags;
-        sessionRows.kd.valueEl.textContent = ratio(totals.kills, totals.deaths);
       }
       update();
       var timer = setInterval(update, 500);

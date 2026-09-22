@@ -93,8 +93,7 @@ same row, same everything, just a wider native range to drag.
 
 **Click your name:** the profile dialog you already get from the corner
 profile keeps its real lifetime stats (games played, kills, deaths, ...) -
-this adds a K/D row plus a running session block (kills/deaths/flags for
-this browser session, carried across matches) right into that same panel.
+this adds a K/D row and an **End session (reset to 0)** button -
 
 **Ending the session:** the session totals carry across matches and reloads, so the profile dialog has an **End session (reset to 0)** button, and a session left untouched for 2 hours ends by itself the next time you load the game.
 
