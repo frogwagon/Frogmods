@@ -93,9 +93,9 @@ same row, same everything, just a wider native range to drag.
 
 **Click your name:** the profile dialog you already get from the corner
 profile keeps its real lifetime stats (games played, kills, deaths, ...) -
-this adds a K/D row and an **End session (reset to 0)** button -
+this adds a K/D row.
 
-**Ending the session:** the session totals carry across matches and reloads, so the profile dialog has an **End session (reset to 0)** button, and a session left untouched for 2 hours ends by itself the next time you load the game.
+**Ending the session:** the running session (kills/deaths/flags for this browser session, carried across matches - see the Tab panel below) has nowhere to reset itself, so the profile dialog also gets an **End session (reset to 0)** button. A session left untouched for 2 hours ends by itself the next time you load the game.
 
 **Hold Tab:** replaces the game's own scoreboard while held - a centered panel with the full player table (kills, deaths, K/D, flags, score by team) next to this match's
 kills/deaths/flags/K-D/ping/fps, a live breakdown of every way you've
