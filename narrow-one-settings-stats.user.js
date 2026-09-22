@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.13.0
+// @version      2.14.0
 // @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -403,33 +403,59 @@
     }
 
     /**
-     * Coins. The server only sends a round's reward when the round ends
-     * (receivedGameEndAccountStats -> gameEndReceivedCoins, and it hands over
-     * the new balance to shopState.ownedCoins), and the game object holding
-     * gameEndReceivedCoins is gone by the next round - so reading only that
-     * showed a dash nearly all the time. The balance itself is always there,
-     * so this shows it, and works out "this round" as how far it has moved
-     * since the round began (or the game's own figure, whichever is larger),
-     * keeping the last finished round after the game object is replaced.
+     * Coins. The server only tells the client a round's real reward once the
+     * round ends, and the object holding that figure is gone by the next
+     * round - reading only that showed a dash nearly all the time, and the
+     * account balance this tried reading off shopState next wasn't reliable
+     * either. Every scoring event moves your total score by a fixed number
+     * of points, and this game's own reward rate works out to 1 coin per
+     * 10 points, rounded up - so "this round" is read straight off your
+     * live score (points rounded up to the next 10, then divided by 10),
+     * updating the instant a point does, and the total carries over into
+     * "last round" once the match object changes for the next one.
      */
-    var coinState = { game: null, base: null, gain: 0, last: 0 };
-    function ownedCoins() {
-      var g = findGame(), s = g && g.shopState;
-      return s && typeof s.ownedCoins === 'number' ? s.ownedCoins : null;
+    var coinState = { game: null, curScore: 0, last: 0 };
+    function pointsToCoins(points) {
+      return Math.ceil((Number(points) || 0) / 10);
     }
     function coinTick() {
-      var owned = ownedCoins(), ag = currentGame();
+      var ag = currentGame(), p = findPlayer();
       if (ag !== coinState.game) {
-        if (coinState.game && coinState.gain > 0) coinState.last = coinState.gain;
-        coinState.game = ag; coinState.base = owned; coinState.gain = 0;
+        if (coinState.game) coinState.last = pointsToCoins(coinState.curScore);
+        coinState.game = ag; coinState.curScore = 0;
       }
-      if (owned !== null) {
-        if (coinState.base === null || owned < coinState.base) coinState.base = owned;   // spent some in the shop
-        var fromGame = ag ? (ag.gameEndReceivedCoins || 0) : 0;
-        coinState.gain = Math.max(owned - coinState.base, fromGame);
-      }
+      if (p) coinState.curScore = p.scoreTotal || 0;
     }
     setInterval(function () { try { coinTick(); } catch (e) {} }, 500);
+
+    /**
+     * Kill streaks for the Tab scoreboard. The game keeps no such counter
+     * itself, so this counts each player's own kills since their last
+     * death: scoreKills rising adds to the streak, dead flipping false to
+     * true zeros it. Tracked per player object, reset match to match same
+     * as everything else keyed off currentGame().
+     */
+    var streakGame = null;
+    var streaks = new Map();   // player -> { kills, dead, streak }
+    function streakTick() {
+      var ag = currentGame();
+      if (ag !== streakGame) { streaks = new Map(); streakGame = ag; }
+      if (!ag) return;
+      ag.players.forEach(function (pl) {
+        if (!pl || typeof pl !== 'object') return;
+        var k = pl.scoreKills || 0, dead = !!pl.dead;
+        var st = streaks.get(pl);
+        if (!st) { streaks.set(pl, { kills: k, dead: dead, streak: 0 }); return; }
+        if (k > st.kills) st.streak += (k - st.kills);
+        if (!st.dead && dead) st.streak = 0;
+        st.kills = k; st.dead = dead;
+      });
+    }
+    setInterval(function () { try { streakTick(); } catch (e) {} }, 500);
+    function killStreak(pl) {
+      var st = streaks.get(pl);
+      return st ? st.streak : 0;
+    }
 
     /* ================================================================ *
      * 1. Widen the native settings sliders in place
@@ -1702,6 +1728,7 @@
       '#nss-panel th:first-child, #nss-panel td:first-child { text-align: left; }',
       '#nss-panel td { text-align: right; padding: 2px 6px; }',
       '#nss-panel tr.nss-me td { background: rgba(255,255,255,.14); }',
+      '#nss-panel .nss-streak-hot { color: #ffb43b; font-weight: 700; }',
       '#nss-panel .nss-av { display:inline-block; width:22px; height:22px; margin-right:8px; ' +
         'vertical-align:middle; border-radius:50%; background: rgba(255,255,255,.15) center/cover no-repeat; }',
       '#nss-panel tr.nss-team td { opacity: .5; font-size: 11px; text-transform: uppercase; ' +
@@ -1924,19 +1951,20 @@
       });
       var nameOf = teamNamer(ids);
 
-      var html = '<table><tr><th>Player</th><th>Kills</th><th>Deaths</th><th>K/D</th><th>Flags</th><th>Score</th></tr>';
+      var html = '<table><tr><th>Player</th><th>Kills</th><th>Deaths</th><th>K/D</th><th>Streak</th><th>Flags</th><th>Score</th></tr>';
       var lastGroup = null;
       list.forEach(function (pl) {
         var spec = isSpectatorPlayer(pl);
         var group = spec ? 'spectators' : 't' + pl.teamId;
         if (group !== lastGroup) {
           lastGroup = group;
-          html += '<tr class="nss-team"><td colspan="6">' + esc(spec ? 'Spectators' : nameOf(pl.teamId)) + '</td></tr>';
+          html += '<tr class="nss-team"><td colspan="7">' + esc(spec ? 'Spectators' : nameOf(pl.teamId)) + '</td></tr>';
         }
-        var k = pl.scoreKills || 0, d = pl.scoreDeaths || 0;
+        var k = pl.scoreKills || 0, d = pl.scoreDeaths || 0, streak = killStreak(pl);
         html += '<tr' + (pl.hasOwnership ? ' class="nss-me"' : '') +
           '><td><span class="nss-av"' + avatarStyle(pl) + '></span>' + esc(pl.playerName || '-') +
           '</td><td>' + k + '</td><td>' + d + '</td><td>' + (d > 0 ? (k / d).toFixed(2) : k.toFixed(2)) +
+          '</td><td' + (streak >= 3 ? ' class="nss-streak-hot"' : '') + '>' + (streak > 0 ? streak : '-') +
           '</td><td>' + (pl.scoreFlags || 0) + '</td><td>' + (pl.scoreTotal || 0) + '</td></tr>';
       });
       return html + '</table>';
@@ -1975,13 +2003,13 @@
 
       html += '</div>';
 
-      // Coin counter: full width, centred under the stats. Balance is always
-      // real; the round figures only move once the server sends the reward.
-      var owned = ownedCoins();
+      // Coin counter: full width, centred under the stats. 1 coin per 10
+      // points this round, rounded up - moves the instant a point does.
+      var thisRound = pointsToCoins(coinState.curScore);
       html += '<div class="nss-coins"><div class="nss-head">Coins</div>' +
-        '<div class="nss-coins-total">' + (owned === null ? '-' : owned.toLocaleString()) + '</div>' +
-        '<div class="nss-coins-sub">This round ' + (coinState.gain > 0 ? '+' + coinState.gain : '-') +
-        (coinState.last > 0 ? ' &nbsp;&middot;&nbsp; Last round +' + coinState.last : '') + '</div></div>';
+        '<div class="nss-coins-total">' + thisRound + '</div>' +
+        '<div class="nss-coins-sub">This round' +
+        (coinState.last > 0 ? ' &nbsp;&middot;&nbsp; Last round ' + coinState.last : '') + '</div></div>';
 
       panelEl.innerHTML = html;
     }

@@ -102,13 +102,13 @@ this browser session, carried across matches) right into that same panel.
 kills/deaths/flags/K-D/ping/fps, a live breakdown of every way you've
 scored a point this match (kills, headshots, flag captures, assists, ... -
 the game's own scoring categories, not a guess), the running session, and
-a centred coin counter under the stats (your balance, plus this round and last round) -
+a centred coin counter under the stats (this round and last round, 1 coin per 10 points rounded up - the game's own rate) -
 for exactly as long as Tab is held, hooked into the game's own Tab
 binding, not a separate toggle.
 
 **Name tags (Settings option) - never on the green (spectator) team:** "Name tags above players" is added under "Show ping and fps" in the native Settings dialog (off by default). The game has no in-world name tags, so this projects each player's position through the game's camera and draws a label. Teammates are always tagged; enemies (red-tinted) only while you can actually see them - each one is gated on the game's own wall raycast (the one that stops arrows), so a tag never appears through solid geometry, and if that test cannot run the tag stays hidden.
 
-**Scoreboard:** team headers read Red team / Blue team (named from your own team's colour, the only one the game exposes), each row has the player's avatar (re-fetched every ~7 seconds while the panel is up, so a changed picture updates), and the weapon-switch bar keeps its normal grey.
+**Scoreboard:** team headers read Red team / Blue team (named from your own team's colour, the only one the game exposes), each row has the player's avatar (re-fetched every ~7 seconds while the panel is up, so a changed picture updates) and a Streak column - kills since that player's last death, in orange from 3 up - and the weapon-switch bar keeps its normal grey.
 
 **Kill feed (Settings option):** "Kill feed" sits under the name-tag row (off by default) and lists kills down the right side (below the flag display) as `Killer → Victim`, coloured by team, fading after a few seconds. The game never tells the client who killed whom, so this infers it from the scoreboard's own numbers - a player dying, paired with whoever's kill count just went up - and shows "X died" if nobody's count moved. Spectators are left out.
 
