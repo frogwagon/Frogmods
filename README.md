@@ -161,7 +161,50 @@ game wasn't willing to show you.
 - Not a replay: the game deletes the map when a round ends, so there is nothing
   to fly through afterwards. This works live, for a match you are watching.
 
-## Install (all six)
+### [Achievements](narrow-one-achievements.user.js)
+
+A trophy button in the main menu, with two sets of achievements underneath it.
+
+**The game's own Steam achievements, working in the browser.** The client
+already has every one of their unlock conditions built in and already runs
+them during ordinary play - they just have nowhere to go outside the Steam
+build. Every place the game decides you've earned one, it calls a single
+function that only does anything if something named `steamworks` exists on
+the page. Rather than fake that (which turns out to change other behaviour
+too - see below), this patches that one function directly, the same
+one-line cache-rewrite technique 1 Kill = 1 Stat Point uses to reach the
+game's instance: the game's own condition, same moment, same seventeen ids
+- this only catches the call. Steam's own achievement names and
+descriptions live on Steam's servers, not in the client, so the name and
+description shown for each one is this mod's own best reading of the
+surrounding code, not the official text.
+
+**A tiered set of new achievements**, covering seven stats (kills,
+headshots, long-range hits, flag captures, assists, wins, matches played)
+across up to three flavours each - an all-time running total, the most
+you've done in one match, and a streak - five tiers apiece, plus a handful
+of one-off "Secret" achievements for things that don't reduce to a single
+number (a kill within seconds of respawning, absorbing hits without dying,
+getting 10 kills with every bow in one match, and more). A tier only shows
+up once you've earned the tier before it in that same row, and reaching a
+high tier in one jump unlocks everything below it in that row too, but
+never spills into an unrelated stat.
+
+- A **Trophies** button appears in the main menu; tabs at the top (T1-T5,
+  Secret) split everything up, and tiered rows carry a live progress bar.
+- Needs the same one-off cache patch as 1 Kill = 1 Stat Point (for the new
+  achievements) - applied automatically, no button, one reload the first
+  time. The Steam-mirrored ones need it too now (an earlier version of
+  this mod didn't require it for those, at the cost of a bug - see next).
+- An earlier version tried a shortcut for the Steam achievements: making
+  the page look like it was running inside Steam. That turned out to
+  affect more than intended - it looks like the game uses the same signal
+  to decide whether to apply your Pelican Party+ perks in the browser,
+  since Steam handles its own entitlements separately. Fixed by patching
+  the one function directly instead, so nothing about how the game sees
+  itself changes.
+
+## Install (all seven)
 
 1. Install **[Tampermonkey](https://www.tampermonkey.net/)** (Chrome, Edge,
    Firefox, Opera).
