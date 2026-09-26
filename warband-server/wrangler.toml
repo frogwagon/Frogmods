@@ -1,0 +1,10 @@
+name = "warband-relay"
+main = "worker.js"
+compatibility_date = "2024-01-01"
+
+# After running:
+#   wrangler kv namespace create WARBAND_KV
+# paste the id it prints below.
+kv_namespaces = [
+  { binding = "WARBAND_KV", id = "a69da54840354a808028f2af8027afd4" }
+]

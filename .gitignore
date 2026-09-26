@@ -12,3 +12,6 @@ narrow-one-target-practice.user.js
 # OS / editor noise
 .DS_Store
 Thumbs.db
+
+# wrangler's own local cache - has account id/email in it, not ours to publish.
+warband-server/.wrangler/

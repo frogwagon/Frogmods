@@ -204,7 +204,43 @@ never spills into an unrelated stat.
   the one function directly instead, so nothing about how the game sees
   itself changes.
 
-## Install (all seven)
+### [Warband (Beta)](narrow-one-warband.user.js)
+
+A friends system for a game that has none - checked directly in the game's
+own code, there's no friends list, no join-request approval, no presence at
+all. This adds one, through a small relay server you deploy yourself (see
+[warband-server/](warband-server/)); nothing here works until that's set up
+and its URL is pasted into the mod's own Settings tab.
+
+**Friends, by a Warband ID** - a random id this mod makes up for itself, not
+your real account. Request/accept by id, see who's online, ask permission
+before joining someone or before inviting them (the actual join still goes
+through the game's own real squad system, this only ever hands back a squad
+code once approved), direct message them, and gift them some of your acorns.
+Friend icons are a coloured circle with an initial, not a real avatar - a
+Warband id has no connection to the game's own player/account system, so
+there's no picture to honestly show for one.
+
+**Weekly quests + acorns.** A handful of quests (kills, headshots, flags,
+matches) refresh every 7 days and pay out "acorns" - a made-up currency that
+only exists in this mod's own local storage. Spend them on cosmetic badges
+shown in a small HUD icon only you see - never a skin swap, since the game
+computes your equipped skin and your combat stats from the same field, and
+changing that locally risks nudging your own stats too.
+
+- A **Warband** button appears in the main menu.
+- **Beta**: tested against a local fake relay and the real game with a
+  couple of real accounts, but it's newer and less battle-tested than the
+  rest of these - expect rough edges, especially in the friends system.
+- Needs its own relay server - a one-time deploy to your own free
+  Cloudflare account, see [warband-server/README.md](warband-server/README.md).
+  An id is as sensitive as a squad code - anyone who has it can act as you
+  on the relay - so hand it out the same way.
+- Squad chat (a nicer floating panel around the game's own real "Press T"
+  chat box) is still an unfinished shell as of this version - it opens, but
+  doesn't yet show message content.
+
+## Install (all eight)
 
 1. Install **[Tampermonkey](https://www.tampermonkey.net/)** (Chrome, Edge,
    Firefox, Opera).
@@ -215,6 +251,10 @@ never spills into an unrelated stat.
    want, and save (Ctrl+S).
 4. Repeat for any of the others.
 5. Open <https://narrow.one/> and join a match.
+
+Warband needs one extra one-time step before its Friends tab does anything -
+deploying your own free relay server, see
+[warband-server/README.md](warband-server/README.md).
 
 ## Notes
 
