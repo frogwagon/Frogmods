@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Warband (Beta)
 // @namespace    narrowone-warband
-// @version      1.9.0
+// @version      1.9.1
 // @description  BETA - Friend requests, join/invite permission, messaging and acorn gifts by a Warband ID (needs its own small relay server - see warband-server/), plus weekly quests that pay out a local cosmetic currency.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -94,7 +94,13 @@
  * 7. A real "Cosmetic" button in the game's own Shop dialog, matching its
  *    native Bow/Arrow/Melee/Rewarded tabs, that opens this mod's own
  *    cosmetic shop (currently just the Fantasy Bow) rather than
- *    rebuilding the game's whole per-slot browsing UI from scratch.
+ *    rebuilding the game's whole per-slot browsing UI from scratch. The
+ *    Shop's own dialog sits in a much higher stacking tier than anything
+ *    this mod can reach from inside gameWrapper, so no z-index on our own
+ *    dialog could ever render above it (confirmed live) - this closes the
+ *    Shop's dialog first (its own real Back button, clicked repeatedly
+ *    until none remain, since a synthetic Escape doesn't trigger its
+ *    close handling) and only opens ours once that's done.
  */
 
 (function () {
@@ -1565,9 +1571,17 @@
       if (wbDialogEl && wbDialogEl.isConnected) return;
       var host = document.getElementById('gameWrapper') || document.body;
 
+      // The game's own native dialogs (Shop included) use this exact same
+      // "dialog wrinkledPaper" class with z-index 99/100 - found live,
+      // opening this from the Shop's own new Cosmetic tab while its
+      // dialog was still open rendered ours BEHIND the shop's, since tied
+      // z-index falls back to DOM order, and the shop's own UI re-renders
+      // itself in a way that isn't reliably "before us" in the DOM. A
+      // clearly higher z-index than any native dialog uses sidesteps that
+      // tiebreak entirely instead of depending on DOM order.
       wbCurtainEl = document.createElement('div');
       wbCurtainEl.className = 'dialogCurtain fullScreen';
-      wbCurtainEl.style.zIndex = '99';
+      wbCurtainEl.style.zIndex = '999';
       wbCurtainEl.addEventListener('click', closeDialog);
       host.appendChild(wbCurtainEl);
 
@@ -1575,7 +1589,7 @@
       wbDialogEl.className = 'dialog wrinkledPaper';
       wbDialogEl.id = 'nwb-dialog';
       wbDialogEl.style.setProperty('--wrinkled-paper-seed', seed());
-      wbDialogEl.style.zIndex = '100';
+      wbDialogEl.style.zIndex = '1000';
 
       var title = document.createElement('h2');
       title.className = 'dialogTitle blueNight';
@@ -1711,10 +1725,40 @@
       var label = document.createElement('span');
       label.textContent = 'Cosmetic';
       btn.appendChild(icon); btn.appendChild(label);
+      // Found live: the Shop's own dialog root sits in a stacking context
+      // far above ours (its outer wrapper is z-index 99999, a whole
+      // different tier from the "dialog wrinkledPaper" z-index 100 class
+      // both it and our own dialog otherwise share) - no z-index we set
+      // on our own dialog can out-rank that from inside gameWrapper, it's
+      // a stacking-context ceiling, not a number to beat. Confirmed live:
+      // even our dialog at z-index 1000000 stayed trapped behind it.
+      //
+      // A synthetic Escape keydown does NOT close it (also confirmed live
+      // - the Shop likely gates its close handling on a trusted event),
+      // but clicking its own real Back button
+      // (button.header-back-button[aria-label="Back"]) does, and each
+      // click only pops one level of its own navigation stack (Edit
+      // Loadout > Bow > Handle > ... can be several deep) - so this
+      // clicks it repeatedly until none remain, confirmed live to fully
+      // clear the Shop's entire dialog stack, before opening ours onto
+      // the now-clean screen instead of ever trying to layer on top of
+      // the Shop's own dialog.
+      function closeNativeShopDialog() {
+        var tries = 0;
+        (function step() {
+          var backBtn = document.querySelector('button.header-back-button[aria-label="Back"]');
+          if (!backBtn || ++tries > 10) return;
+          backBtn.click();
+          setTimeout(step, 120);
+        })();
+      }
       btn.addEventListener('click', function (e) {
         e.preventDefault(); e.stopPropagation();
-        activeWbTab = 'Quests';
-        openDialog();
+        closeNativeShopDialog();
+        setTimeout(function () {
+          activeWbTab = 'Quests';
+          openDialog();
+        }, 1300);
       });
       list.appendChild(btn);
     }
