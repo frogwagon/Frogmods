@@ -216,17 +216,27 @@ and its URL is pasted into the mod's own Settings tab.
 your real account. Request/accept by id, see who's online, ask permission
 before joining someone or before inviting them (the actual join still goes
 through the game's own real squad system, this only ever hands back a squad
-code once approved), direct message them, and gift them some of your acorns.
-Friend icons are a coloured circle with an initial, not a real avatar - a
-Warband id has no connection to the game's own player/account system, so
-there's no picture to honestly show for one.
+code once approved), direct message them, and gift them some of your
+cosmetic coins. Friend icons are a coloured circle with an initial, not a
+real avatar - a Warband id has no connection to the game's own
+player/account system, so there's no picture to honestly show for one.
 
-**Weekly quests + acorns.** A handful of quests (kills, headshots, flags,
-matches) refresh every 7 days and pay out "acorns" - a made-up currency that
-only exists in this mod's own local storage. Spend them on cosmetic badges
-shown in a small HUD icon only you see - never a skin swap, since the game
-computes your equipped skin and your combat stats from the same field, and
-changing that locally risks nudging your own stats too.
+**Daily + weekly quests, cosmetic coins.** A handful of quests (kills,
+headshots, flags, matches) refresh every day at an easy difficulty, plus a
+separate, harder set that refreshes every 7 days for a bigger payout - both
+pay out "cosmetic coins", a made-up currency that only exists in this mod's
+own local storage. You can also watch a real rewarded ad (through the
+game's own existing ad provider) for a coin top-up - only pays out on a
+genuinely completed ad, never a fake credit.
+
+**A real "Cosmetic" tab in the game's own Shop dialog** - styled to match
+its native Bow/Arrow/Melee/Rewarded tabs, opening this mod's own cosmetic
+shop. Right now that's one item: a fantasy-styled reskin for your B2
+(medium bow), a real downloaded 3D model (CC0-licensed, not the mod's own
+invention), swapped in as pure local render state - never a skin swap, since
+the game computes your equipped skin and your combat stats from the same
+field, and changing that locally risks nudging your own stats too. Only
+ever visible on your own screen.
 
 - A **Warband** button appears in the main menu.
 - **Beta**: tested against a local fake relay and the real game with a

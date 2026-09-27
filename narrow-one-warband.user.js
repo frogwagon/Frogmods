@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Warband (Beta)
 // @namespace    narrowone-warband
-// @version      1.3.0
+// @version      1.9.0
 // @description  BETA - Friend requests, join/invite permission, messaging and acorn gifts by a Warband ID (needs its own small relay server - see warband-server/), plus weekly quests that pay out a local cosmetic currency.
 // @author       Frogwagon
 // @match        https://narrow.one/*
@@ -42,20 +42,16 @@
  *    touches the DOM around it. (Still a shell as of this version - see the
  *    TODO further down; it opens on T but doesn't yet show message content.)
  *
- * 3. Weekly quests. A handful of them are active at a time (kills, headshots,
- *    flags, matches - things Settings & Stats and Achievements already read
- *    the same way), refreshed every 7 days, paying out a made-up local
- *    currency, "acorns", that only exists in this mod's own storage. Spend
- *    them on cosmetic badges shown only in this mod's own little HUD, not
- *    on your in-game character - explained more where that code is, but
- *    the short version: the game computes your equipped skin and your
- *    combat stats from the exact same field, so swapping your visible gear
- *    locally risks nudging your own client-side stat numbers too, which is
- *    precisely what "no stats past your own gear" is trying to prevent.
- *    Rather than risk that, badges are their own separate, harmless little
- *    icon - never touches equippedSkinData, never touches a stat.
+ * 3. Daily + weekly quests. A handful of each are active at a time (kills,
+ *    headshots, flags, matches - things Settings & Stats and Achievements
+ *    already read the same way); daily quests refresh every day at an easy
+ *    difficulty, weekly quests refresh every 7 days at a deliberately
+ *    harder target for a bigger payout - a real bonus tier, not just the
+ *    daily quest scaled by 7. Both pay out a made-up local currency,
+ *    "cosmetic coins", that only exists in this mod's own storage - never
+ *    a stat, never anything past your own gear.
  *
- * 4. Gifting acorns to a friend. Acorns only ever exist as a plain number
+ * 4. Gifting cosmetic coins to a friend. Cosmetic coins only ever exist as a plain number
  *    in this mod's own local storage - there's no acorn "account" on the
  *    relay at all, so a gift is really just "take some off my local number,
  *    tell the relay to deliver a note to them", and their mod adds it to
@@ -66,6 +62,39 @@
  *    HUD icon only they can see, never a stat, so there's nothing here
  *    worth cheating for. The relay only checks that you're actually
  *    friends and caps the amount to something sane per gift.
+ *
+ * 5. A fantasy-styled reskin for your B2 (medium bow) - a Legendary shop
+ *    entry in the Quests tab, 100 cosmetic coins. The exact model originally
+ *    asked for (a Sketchfab piece) turned out to have no license and no
+ *    download option at all - checked directly on the page. This uses a
+ *    real substitute instead of a from-scratch guess: the Elven Leaf
+ *    Longbow from Polyy.AI's "[FREE] 3D Fantasy Bows Pack" on itch.io,
+ *    CC0, downloaded and verified (genuine glTF binary, matches its own
+ *    file listing, nothing else in the archive) before ever using it -
+ *    see warband-server/assets/README.md. Verified this doesn't risk the
+ *    same stat-coupling problem that keeps badges HUD-only: your combat
+ *    stats come from equippedSkinIds alone, never from the 3D mesh, so
+ *    hiding your real bow mesh and parenting this one in its place never
+ *    touches a stat or equippedSkinData. Since it's pure local render
+ *    state, it's already only ever visible on your own screen - see the
+ *    big comment further down for exactly what it hides, where it
+ *    attaches, and the rotation/material fixes it needed to actually look
+ *    right once tested live. Static the whole time you hold it - the
+ *    model has no rig at all (0 skins, 0 animations - checked directly),
+ *    so there's no real draw/bend to show; an earlier version faked a
+ *    tilt tied to draw progress, but that's gone now, back to just
+ *    holding its resting pose.
+ *
+ * 6. Watch an ad for +50 cosmetic coins - a real rewarded ad through the
+ *    game's own existing ad provider (Poki), the same one it already uses
+ *    for its own "double your coins" offer. Only ever pays out on a
+ *    genuinely completed ad (checked directly in the bundle) - skip,
+ *    fail, or an adblocker all just pay nothing, no fake credit.
+ *
+ * 7. A real "Cosmetic" button in the game's own Shop dialog, matching its
+ *    native Bow/Arrow/Melee/Rewarded tabs, that opens this mod's own
+ *    cosmetic shop (currently just the Fantasy Bow) rather than
+ *    rebuilding the game's whole per-slot browsing UI from scratch.
  */
 
 (function () {
@@ -253,8 +282,10 @@
     var STORE_KEY = 'narrowone.warband.v1';
     var store = {
       acorns: 0,
-      badges: {},            // id -> unlockedAt
-      quests: { weekId: null, active: [], progress: {} },
+      quests: {
+        daily: { periodId: null, active: [], progress: {}, claimed: {} },
+        weekly: { periodId: null, active: [], progress: {}, claimed: {} }
+      },
       // Friends v2 - see the big comment below. Names/relay URL/popup
       // preference are the only things this mod itself remembers; friend
       // relationships, requests and messages live on the relay you deploy.
@@ -262,7 +293,9 @@
       relayUrl: '',
       popupsEnabled: true,
       lastClearedMessageAt: 0,
-      shownRequestIds: []   // requests already popped up once - see the note by shownRequestIds below
+      shownRequestIds: [],  // requests already popped up once - see the note by shownRequestIds below
+      legendaryBows: {},        // id -> unlockedAt - see the fantasy bow section below
+      equippedLegendaryBow: null
     };
     (function loadStore() {
       try {
@@ -271,13 +304,18 @@
           var saved = JSON.parse(raw);
           if (saved && typeof saved === 'object') {
             store.acorns = Number(saved.acorns) || 0;
-            store.badges = saved.badges && typeof saved.badges === 'object' ? saved.badges : {};
-            if (saved.quests && typeof saved.quests === 'object') store.quests = saved.quests;
+            // Old flat {weekId,active,progress} shape from before the
+            // daily/weekly split isn't compatible - a saved shape missing
+            // either bucket just falls back to the fresh default above
+            // (a one-time reset, same as other schema changes here).
+            if (saved.quests && saved.quests.daily && saved.quests.weekly) store.quests = saved.quests;
             store.friendNames = saved.friendNames && typeof saved.friendNames === 'object' ? saved.friendNames : {};
             store.relayUrl = typeof saved.relayUrl === 'string' ? saved.relayUrl : '';
             store.popupsEnabled = saved.popupsEnabled !== false;
             store.lastClearedMessageAt = Number(saved.lastClearedMessageAt) || 0;
             store.shownRequestIds = Array.isArray(saved.shownRequestIds) ? saved.shownRequestIds : [];
+            store.legendaryBows = saved.legendaryBows && typeof saved.legendaryBows === 'object' ? saved.legendaryBows : {};
+            store.equippedLegendaryBow = typeof saved.equippedLegendaryBow === 'string' ? saved.equippedLegendaryBow : null;
           }
         }
       } catch (e) {}
@@ -444,7 +482,7 @@
       amount = Math.floor(Number(amount));
       if (!amount || amount <= 0) return Promise.reject(new Error('enter an amount'));
       if (amount > MAX_GIFT_AMOUNT) return Promise.reject(new Error('too many at once - max ' + MAX_GIFT_AMOUNT));
-      if (amount > store.acorns) return Promise.reject(new Error('you only have ' + store.acorns + ' acorns'));
+      if (amount > store.acorns) return Promise.reject(new Error('you only have ' + store.acorns + ' cosmetic coins'));
       store.acorns -= amount;
       saveStore();
       return relayCall('/gift', 'POST', { fromId: myWarbandId(), toId: toId, amount: amount }).catch(function (e) {
@@ -504,7 +542,7 @@
           if (amount > 0) {
             store.acorns += amount;
             saveStore();
-            showToast(friendName(m.fromId) + ' gifted you ' + amount + ' acorns! 🌰');
+            showToast(friendName(m.fromId) + ' gifted you ' + amount + ' cosmetic coins! 🪙');
           }
         }
       });
@@ -582,81 +620,140 @@
     setInterval(function () { try { squadRosterTick(); } catch (e) {} }, 3000);
 
     /* ================================================================ *
-     * 2. Weekly quests + acorns
+     * 2. Daily + weekly quests, cosmetic coins
      *
-     * A handful of active quests refresh every 7 days from a fixed pool -
-     * same kind of tick-based tracking Achievements uses (kills, flags,
-     * headshots off trackedMyPlayerScores and the real scoreKills/scoreFlags
-     * fields), just aimed at a rotating weekly target instead of a
-     * permanent ladder.
+     * Two independent tiers from two separate pools - daily quests refresh
+     * every day at the same easy difficulty/payout this used to be the
+     * only tier at; weekly quests refresh every 7 days, deliberately
+     * harder targets for a bigger payout, a real bonus rather than just
+     * "the daily quest, but x7". Same tick-based tracking Achievements
+     * uses (kills, flags, headshots off trackedMyPlayerScores and the
+     * real scoreKills/scoreFlags fields) feeds both tiers from one set of
+     * per-match deltas.
      * ================================================================ */
 
-    var QUEST_POOL = [
-      { id: 'kills15', label: 'Get 15 kills this week', stat: 'kills', target: 15, reward: 8 },
-      { id: 'kills40', label: 'Get 40 kills this week', stat: 'kills', target: 40, reward: 15 },
-      { id: 'flags3', label: 'Capture 3 flags this week', stat: 'flags', target: 3, reward: 10 },
-      { id: 'flags8', label: 'Capture 8 flags this week', stat: 'flags', target: 8, reward: 18 },
-      { id: 'headshots10', label: 'Land 10 headshots this week', stat: 'headshots', target: 10, reward: 10 },
-      { id: 'headshots25', label: 'Land 25 headshots this week', stat: 'headshots', target: 25, reward: 20 },
-      { id: 'matches5', label: 'Play 5 matches this week', stat: 'matches', target: 5, reward: 6 },
-      { id: 'matches15', label: 'Play 15 matches this week', stat: 'matches', target: 15, reward: 16 },
-      { id: 'wins2', label: 'Win 2 matches this week', stat: 'wins', target: 2, reward: 12 },
-      { id: 'assists10', label: 'Get 10 assists this week', stat: 'assists', target: 10, reward: 9 }
+    var DAILY_QUEST_POOL = [
+      { id: 'd_kills15', label: 'Get 15 kills today', stat: 'kills', target: 15, reward: 8 },
+      { id: 'd_kills40', label: 'Get 40 kills today', stat: 'kills', target: 40, reward: 15 },
+      { id: 'd_flags3', label: 'Capture 3 flags today', stat: 'flags', target: 3, reward: 10 },
+      { id: 'd_flags8', label: 'Capture 8 flags today', stat: 'flags', target: 8, reward: 18 },
+      { id: 'd_headshots10', label: 'Land 10 headshots today', stat: 'headshots', target: 10, reward: 10 },
+      { id: 'd_headshots25', label: 'Land 25 headshots today', stat: 'headshots', target: 25, reward: 20 },
+      { id: 'd_matches5', label: 'Play 5 matches today', stat: 'matches', target: 5, reward: 6 },
+      { id: 'd_matches15', label: 'Play 15 matches today', stat: 'matches', target: 15, reward: 16 },
+      { id: 'd_wins2', label: 'Win 2 matches today', stat: 'wins', target: 2, reward: 12 },
+      { id: 'd_assists10', label: 'Get 10 assists today', stat: 'assists', target: 10, reward: 9 }
+    ];
+    var WEEKLY_QUEST_POOL = [
+      { id: 'w_kills75', label: 'Get 75 kills this week', stat: 'kills', target: 75, reward: 60 },
+      { id: 'w_kills200', label: 'Get 200 kills this week', stat: 'kills', target: 200, reward: 130 },
+      { id: 'w_flags15', label: 'Capture 15 flags this week', stat: 'flags', target: 15, reward: 75 },
+      { id: 'w_flags40', label: 'Capture 40 flags this week', stat: 'flags', target: 40, reward: 150 },
+      { id: 'w_headshots50', label: 'Land 50 headshots this week', stat: 'headshots', target: 50, reward: 70 },
+      { id: 'w_headshots125', label: 'Land 125 headshots this week', stat: 'headshots', target: 125, reward: 150 },
+      { id: 'w_matches25', label: 'Play 25 matches this week', stat: 'matches', target: 25, reward: 45 },
+      { id: 'w_matches60', label: 'Play 60 matches this week', stat: 'matches', target: 60, reward: 120 },
+      { id: 'w_wins10', label: 'Win 10 matches this week', stat: 'wins', target: 10, reward: 90 },
+      { id: 'w_assists50', label: 'Get 50 assists this week', stat: 'assists', target: 50, reward: 65 }
     ];
     var QUEST_BY_ID = {};
-    QUEST_POOL.forEach(function (q) { QUEST_BY_ID[q.id] = q; });
+    DAILY_QUEST_POOL.concat(WEEKLY_QUEST_POOL).forEach(function (q) { QUEST_BY_ID[q.id] = q; });
+    var QUEST_BUCKETS = {
+      daily: { pool: DAILY_QUEST_POOL, periodMs: 24 * 3600 * 1000, count: 3 },
+      weekly: { pool: WEEKLY_QUEST_POOL, periodMs: 7 * 24 * 3600 * 1000, count: 3 }
+    };
 
-    function weekId() {
-      // Days since a fixed epoch, divided into 7-day buckets - stable
-      // regardless of what day of the week you first install this.
-      return Math.floor(Date.now() / (7 * 24 * 3600 * 1000));
+    function questPeriodId(periodMs) {
+      // Time since a fixed epoch, divided into period-length buckets -
+      // stable regardless of what day/time you first install this.
+      return Math.floor(Date.now() / periodMs);
     }
-    function pickWeeklyQuests() {
-      var pool = QUEST_POOL.slice();
+    function pickQuests(pool, count) {
+      var p = pool.slice();
       var picked = [];
-      for (var i = 0; i < 3 && pool.length; i++) {
-        var idx = Math.floor(Math.random() * pool.length);
-        picked.push(pool.splice(idx, 1)[0].id);
+      for (var i = 0; i < count && p.length; i++) {
+        var idx = Math.floor(Math.random() * p.length);
+        picked.push(p.splice(idx, 1)[0].id);
       }
       return picked;
     }
-    function ensureWeeklyQuests() {
-      var w = weekId();
-      if (store.quests.weekId !== w) {
-        store.quests = { weekId: w, active: pickWeeklyQuests(), progress: {} };
+    function ensureQuestBucket(bucketName) {
+      var cfg = QUEST_BUCKETS[bucketName];
+      var pid = questPeriodId(cfg.periodMs);
+      if (store.quests[bucketName].periodId !== pid) {
+        store.quests[bucketName] = { periodId: pid, active: pickQuests(cfg.pool, cfg.count), progress: {}, claimed: {} };
         saveStore();
       }
     }
-    function questProgress(statKey) {
-      return store.quests.progress[statKey] || 0;
+    function ensureAllQuests() { ensureQuestBucket('daily'); ensureQuestBucket('weekly'); }
+    function questProgress(bucketName, statKey) {
+      return store.quests[bucketName].progress[statKey] || 0;
     }
     function addQuestProgress(statKey, amount) {
       if (amount <= 0) return;
-      store.quests.progress[statKey] = (store.quests.progress[statKey] || 0) + amount;
       var changed = false;
-      store.quests.active.forEach(function (qid) {
-        var q = QUEST_BY_ID[qid];
-        if (!q || q.stat !== statKey) return;
-        if (isQuestClaimed(qid)) return;
-        if (store.quests.progress[statKey] >= q.target) changed = true;
+      ['daily', 'weekly'].forEach(function (bucketName) {
+        var bucket = store.quests[bucketName];
+        bucket.progress[statKey] = (bucket.progress[statKey] || 0) + amount;
+        bucket.active.forEach(function (qid) {
+          var q = QUEST_BY_ID[qid];
+          if (!q || q.stat !== statKey) return;
+          if (isQuestClaimed(bucketName, qid)) return;
+          if (bucket.progress[statKey] >= q.target) changed = true;
+        });
       });
       saveStore();
       if (changed && questsDialogEl && questsDialogEl.isConnected) renderQuestsDialog();
     }
-    function isQuestClaimed(qid) {
-      return !!(store.quests.claimed && store.quests.claimed[qid]);
+    function isQuestClaimed(bucketName, qid) {
+      var bucket = store.quests[bucketName];
+      return !!(bucket.claimed && bucket.claimed[qid]);
     }
-    function claimQuest(qid) {
+    function claimQuest(bucketName, qid) {
+      var bucket = store.quests[bucketName];
       var q = QUEST_BY_ID[qid];
-      if (!q || store.quests.active.indexOf(qid) === -1) return false;
-      if (isQuestClaimed(qid)) return false;
-      if (questProgress(q.stat) < q.target) return false;
-      if (!store.quests.claimed) store.quests.claimed = {};
-      store.quests.claimed[qid] = true;
+      if (!q || bucket.active.indexOf(qid) === -1) return false;
+      if (isQuestClaimed(bucketName, qid)) return false;
+      if (questProgress(bucketName, q.stat) < q.target) return false;
+      if (!bucket.claimed) bucket.claimed = {};
+      bucket.claimed[qid] = true;
       store.acorns += q.reward;
       saveStore();
       showAcornToast(q.reward);
       return true;
+    }
+
+    /**
+     * Watch an ad for coins - a real rewarded ad, through the game's own
+     * existing ad provider (Poki), the same one it already uses for its
+     * own "double your coins" offer after a match. Checked directly in
+     * the bundle: po().poki.rewardedBreakWithErrorDialog(...) only
+     * resolves true once an ad has genuinely played to completion (skip,
+     * fail, adblocker, or the SDK not being available all resolve false,
+     * including showing the game's own "Ad failed to load" dialog on
+     * failure) - this only ever pays out on that real true, never a fake
+     * "as if you'd watched one".
+     */
+    var AD_REWARD_COINS = 50;
+    var adRewardInFlight = false;
+    function watchAdForCoins() {
+      if (adRewardInFlight) return Promise.resolve(false);
+      var g = findGame();
+      if (!g || !g.poki || typeof g.poki.rewardedBreakWithErrorDialog !== 'function') {
+        return Promise.reject(new Error('ads are not available right now'));
+      }
+      adRewardInFlight = true;
+      return g.poki.rewardedBreakWithErrorDialog({
+        category: 'reward', details: 'warband_coins', placement: 'warband-shop'
+      }).then(function (success) {
+        adRewardInFlight = false;
+        if (success) {
+          store.acorns += AD_REWARD_COINS;
+          saveStore();
+          showAcornToast(AD_REWARD_COINS);
+        }
+        return success;
+      }).catch(function (e) { adRewardInFlight = false; throw e; });
     }
 
     /* Tracking - one poll, reusing the same match-baseline pattern
@@ -665,7 +762,7 @@
     function questTick() {
       var ag = currentGame();
       var p = findPlayer();
-      ensureWeeklyQuests();
+      ensureAllQuests();
 
       if (ag !== qtrack.game) {
         qtrack.game = ag;
@@ -698,64 +795,173 @@
     setInterval(function () { try { questTick(); } catch (e) {} }, 500);
 
     /* ================================================================ *
-     * 3. Acorn badges - a small local, cosmetic-only unlock. Deliberately
-     * NOT a skin swap: equippedSkinData feeds both what you look like and
-     * (via getStatClassValuesFromShopSkinIds) your own combat stats, in
-     * the same call - changing it locally to preview gear you don't own
-     * risks nudging your own client-computed stats too, the exact thing
-     * "no stats past your own gear" rules out. A badge is its own little
-     * icon in the corner of the screen, shown only to you, that never
-     * touches equippedSkinData or a stat calculation at all.
-     * ================================================================ */
+     * 3b. Fantasy bow - a Legendary shop entry in the Quests tab.
+     *
+     * Unlike a badge, this really does change what your held B2 (medium
+     * bow) looks like - so the same equippedSkinData/stat coupling that
+     * ruled out a real skin swap for badges needed checking first. It
+     * doesn't apply here: the game computes your combat stats from
+     * getStatClassValuesFromShopSkinIds(equippedSkinIds, bowId) - purely
+     * from which skin IDs you own and have equipped, never from the 3D
+     * mesh itself. So this never touches equippedSkinData or any skin id
+     * at all; it only hides your bow's real mesh
+     * (bowWeapon.bowAssetLoader.currentBowAsset) and parents a small
+     * fantasy-styled bow (built entirely from plain three.js primitives -
+     * a curved wood-toned tube, a gold grip and tips, a glowing gem, thin
+     * emissive "rune" lines - no external 3D file, so no licensing
+     * question either) into bowWeapon.bowAssetLoader.obj in its place.
+     * That parent object is local render state only - nothing here is
+     * sent anywhere, so nobody else's game ever shows it; it only ever
+     * changes what your own client draws for your own held weapon.
+     *
+     * Loads its own copy of three.js r128 from a CDN the first time it's
+     * actually equipped (not on every page load) since building the
+     * shape needs real three.js classes, and grabbing them from the
+     * game's own minified bundle isn't something worth the fragility.
+     *
+     * Shows in the Quests tab under Legendary - Buy (100 cosmetic coins), then
+     * Wear/Equipped like a badge. grantFantasyBowForTesting() is still
+     * exposed on NarrowWarband for a free test unlock without spending
+     * cosmetic coins; equipFantasyBow()/unlockFantasyBow() back the buttons.
+     */
+    var FANTASY_BOW_COST = 100;
+    var THREE_CDN_URL = 'https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js';
+    var GLTF_LOADER_CDN_URL = 'https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js';
+    // Commit-pinned (not a branch) so this never depends on jsDelivr's cache
+    // catching up to a later push - a specific commit's content never
+    // changes, so this URL is good forever regardless of what main does
+    // later.
+    var FANTASY_BOW_MODEL_URL = 'https://cdn.jsdelivr.net/gh/frogwagon/Frogmods@4f77137efb472f9f595bfa1332dece07233c509e/warband-server/assets/elven_leaf_longbow.glb';
 
-    var BADGES = [
-      { id: 'acorn10', name: 'Bronze Acorn', cost: 20, emoji: '🦉' },
-      { id: 'acorn25', name: 'Silver Acorn', cost: 45, emoji: '⚔️' },
-      { id: 'acorn50', name: 'Gold Acorn', cost: 90, emoji: '🏆' },
-      { id: 'acorn100', name: 'Warband Crest', cost: 160, emoji: '👑' }
-    ];
-    var BADGE_BY_ID = {};
-    BADGES.forEach(function (b) { BADGE_BY_ID[b.id] = b; });
-    var equippedBadge = null;
-    (function loadEquippedBadge() {
-      try { equippedBadge = localStorage.getItem('narrowone.warband.equippedBadge') || null; } catch (e) {}
-    })();
-    function setEquippedBadge(id) {
-      equippedBadge = id;
-      try {
-        if (id) localStorage.setItem('narrowone.warband.equippedBadge', id);
-        else localStorage.removeItem('narrowone.warband.equippedBadge');
-      } catch (e) {}
-      renderBadgeHud();
+    function loadScriptOnce(src) {
+      return new Promise(function (resolve, reject) {
+        var s = document.createElement('script');
+        s.src = src;
+        s.onload = resolve;
+        s.onerror = function () { reject(new Error('could not load ' + src)); };
+        document.head.appendChild(s);
+      });
     }
-    function buyBadge(id) {
-      var b = BADGE_BY_ID[id];
-      if (!b || store.badges[id]) return false;
-      if (store.acorns < b.cost) return false;
-      store.acorns -= b.cost;
-      store.badges[id] = Date.now();
+    var threeLoadPromise = null;
+    function loadThreeAndGltfLoader() {
+      if (PAGE.__nwbThreeR128 && PAGE.__nwbThreeR128.GLTFLoader) return Promise.resolve(PAGE.__nwbThreeR128);
+      if (threeLoadPromise) return threeLoadPromise;
+      threeLoadPromise = Promise.resolve()
+        .then(function () { if (!PAGE.THREE) return loadScriptOnce(THREE_CDN_URL); })
+        .then(function () { if (!PAGE.THREE.GLTFLoader) return loadScriptOnce(GLTF_LOADER_CDN_URL); })
+        .then(function () { PAGE.__nwbThreeR128 = PAGE.THREE; return PAGE.__nwbThreeR128; })
+        .catch(function (e) { threeLoadPromise = null; throw e; });
+      return threeLoadPromise;
+    }
+
+    var fantasyBowModelPromise = null;
+    // "Fantasy Bow - Fable Inspired Yew Bow" on Sketchfab, the model
+    // originally asked for, turned out to have no license and no download
+    // option at all - checked directly on the page before giving up on it.
+    // This is a real substitute instead of a from-scratch guess: the Elven
+    // Leaf Longbow from Polyy.AI's "[FREE] 3D Fantasy Bows Pack" on itch.io
+    // (https://polyyai.itch.io/3d-fantasy-bows-pack), CC0, downloaded and
+    // verified directly (genuine glTF binary, matches its own file listing,
+    // nothing else in the archive) before ever using it - see
+    // warband-server/assets/README.md.
+    //
+    // Loaded once and cached (not per-equip) since it's a real network
+    // fetch. Verified live in a real match against the real bowWeapon
+    // object: the model's own natural axes already line up correctly with
+    // no rotation needed (identity), confirmed by live-testing in game
+    // against B2/mediumBow specifically with NarrowWarband.
+    // fantasyBowObject() as a console-adjustable knob - and its material
+    // came in as metalness 1/roughness 1, which renders solid black under
+    // this game's lighting (a first-person weapon view most likely gets
+    // its own dedicated light on a layer this new object was never added
+    // to, rather than the world lights everything else in the scene
+    // reads) - rather than chase that down, the material is swapped for
+    // an unlit one using the exact same texture, which looks correct
+    // regardless of what lights or layers are actually in play. Since a
+    // first-person weapon view is local to each client's own browser -
+    // there was no way for either of us to see the other's screen, so this had
+    // to be tuned live rather than guessed from here.
+    var FANTASY_BOW_BASE_ROTATION_X = -0.6;
+    function loadFantasyBowModel(THREE) {
+      if (fantasyBowModelPromise) return fantasyBowModelPromise;
+      var loader = new THREE.GLTFLoader();
+      fantasyBowModelPromise = new Promise(function (resolve, reject) {
+        loader.load(FANTASY_BOW_MODEL_URL, resolve, undefined, reject);
+      }).then(function (gltf) {
+        var root = gltf.scene;
+        root.name = 'nwb-fantasy-bow';
+        root.rotation.set(FANTASY_BOW_BASE_ROTATION_X, 0, 0);
+        root.scale.setScalar(1.5);
+        root.traverse(function (o) {
+          if (o.isMesh) o.material = new THREE.MeshBasicMaterial({ map: o.material.map, color: 0xffffff });
+        });
+        return root;
+      }).catch(function (e) { fantasyBowModelPromise = null; throw e; });
+      return fantasyBowModelPromise;
+    }
+
+    function unlockFantasyBow() {
+      if (store.legendaryBows.fantasyBow) return true;
+      if (store.acorns < FANTASY_BOW_COST) return false;
+      store.acorns -= FANTASY_BOW_COST;
+      store.legendaryBows.fantasyBow = Date.now();
       saveStore();
       return true;
     }
+    // Console-only grant for testing before this has a real shop entry -
+    // skips the acorn cost on purpose, same as being handed a test build.
+    function grantFantasyBowForTesting() {
+      store.legendaryBows.fantasyBow = Date.now();
+      saveStore();
+      return true;
+    }
+    function equipFantasyBow(on) {
+      store.equippedLegendaryBow = (on && store.legendaryBows.fantasyBow) ? 'fantasyBow' : null;
+      saveStore();
+    }
+    function fantasyBowWanted() { return store.equippedLegendaryBow === 'fantasyBow'; }
 
-    var badgeHudEl = null;
-    function renderBadgeHud() {
-      if (!equippedBadge || !BADGE_BY_ID[equippedBadge]) {
-        if (badgeHudEl) badgeHudEl.style.display = 'none';
+    var fantasyBowGroup = null, fantasyBowHiddenRealMesh = null;
+    function fantasyBowTick() {
+      var p = findPlayer();
+      var bw = p && p.bowWeapon;
+      var active = fantasyBowWanted() && bw && bw.bowWeaponTypeId === 'mediumBow' && bw.bowAssetLoader;
+
+      if (!active) {
+        if (fantasyBowHiddenRealMesh) { fantasyBowHiddenRealMesh.visible = true; fantasyBowHiddenRealMesh = null; }
+        if (fantasyBowGroup && fantasyBowGroup.parent) fantasyBowGroup.parent.remove(fantasyBowGroup);
+        fantasyBowGroup = null;
         return;
       }
-      if (!badgeHudEl) {
-        badgeHudEl = document.createElement('div');
-        badgeHudEl.id = 'nwb-badge-hud';
-        badgeHudEl.style.cssText = 'position:fixed;top:12px;right:12px;background:rgba(15,15,20,.7);' +
-          'color:#fff;padding:6px 10px;border-radius:8px;font:600 13px system-ui,sans-serif;' +
-          'display:flex;align-items:center;gap:6px;z-index:150;pointer-events:none;';
-        document.body.appendChild(badgeHudEl);
+
+      var realMesh = bw.bowAssetLoader.currentBowAsset;
+      var loaderObj = bw.bowAssetLoader.obj;
+      if (fantasyBowGroup && fantasyBowGroup.parent === loaderObj && fantasyBowHiddenRealMesh === realMesh) {
+        if (realMesh.visible) realMesh.visible = false;   // self-heal if the game ever re-shows it
+        return;
       }
-      var b = BADGE_BY_ID[equippedBadge];
-      badgeHudEl.style.display = 'flex';
-      badgeHudEl.textContent = b.emoji + ' ' + b.name;
+
+      // First time this tick has seen this exact mesh (just equipped,
+      // respawned, or a fresh match) - (re)apply, loading three.js and the
+      // model first if this is the very first time either's been needed
+      // (both cached after that - see loadThreeAndGltfLoader/
+      // loadFantasyBowModel).
+      loadThreeAndGltfLoader().then(function (THREE) {
+        return loadFantasyBowModel(THREE);
+      }).then(function (bowObj) {
+        if (!fantasyBowWanted()) return;
+        var p2 = findPlayer();
+        var bw2 = p2 && p2.bowWeapon;
+        if (!bw2 || bw2.bowWeaponTypeId !== 'mediumBow' || !bw2.bowAssetLoader) return;
+        var realMesh2 = bw2.bowAssetLoader.currentBowAsset;
+        var loaderObj2 = bw2.bowAssetLoader.obj;
+        realMesh2.visible = false;
+        fantasyBowHiddenRealMesh = realMesh2;
+        fantasyBowGroup = bowObj;
+        loaderObj2.add(fantasyBowGroup);   // reparents automatically if already attached elsewhere
+      }).catch(function (e) { console.warn('[Warband] fantasy bow:', e.message); });
     }
+    setInterval(function () { try { fantasyBowTick(); } catch (e) {} }, 1000);
 
     /* ================================================================ *
      * Look and feel
@@ -796,7 +1002,7 @@
       '#nwb-dialog .nwb-bar { height: 6px; border-radius: 3px; background: rgba(0,0,0,.15); ' +
         'margin-top: 6px; overflow: hidden; }',
       '#nwb-dialog .nwb-bar-fill { height: 100%; background: #ffb43b; border-radius: 3px; }',
-      '#nwb-dialog .nwb-acorns { font: 800 14px inherit; margin-bottom: 10px; }',
+      '#nwb-dialog .nwb-coins { font: 800 14px inherit; margin-bottom: 10px; }',
       '#nwb-dialog .nwb-badge-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; ' +
         'border-bottom: 1px solid rgba(0,0,0,.1); }',
       '#nwb-dialog .nwb-badge-emoji { font-size: 22px; }',
@@ -839,7 +1045,7 @@
       setTimeout(function () { el.classList.remove('nwb-in'); }, 4500);
       setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 5000);
     }
-    function showAcornToast(amount) { showToast('Quest complete! +' + amount + ' acorns'); }
+    function showAcornToast(amount) { showToast('Quest complete! +' + amount + ' cosmetic coins'); }
     function showChatToast(name, text) { showToast(name + ': ' + text); }
 
     /* Incoming friend/join/invite requests - a real popup with Accept/
@@ -1071,7 +1277,7 @@
         var giftBtn = document.createElement('button');
         giftBtn.className = 'nwb-btn'; giftBtn.type = 'button'; giftBtn.tabIndex = -1;
         giftBtn.textContent = 'Gift';
-        giftBtn.title = 'Send them some of your acorns - cosmetic currency only, never a stat.';
+        giftBtn.title = 'Send them some of your cosmetic coins - cosmetic currency only, never a stat.';
         giftBtn.addEventListener('click', function () { openGiftWith(f.id); });
 
         row.appendChild(joinBtn); row.appendChild(inviteBtn); row.appendChild(msgBtn); row.appendChild(giftBtn);
@@ -1089,11 +1295,11 @@
       wrap.style.cssText = 'margin-top:14px;border-top:1px solid rgba(0,0,0,.15);padding-top:10px;';
       var head = document.createElement('div');
       head.style.fontWeight = '700';
-      head.textContent = 'Gift acorns to ' + friendName(activeGiftWith);
+      head.textContent = 'Gift cosmetic coins to ' + friendName(activeGiftWith);
       wrap.appendChild(head);
       var balance = document.createElement('div');
       balance.style.cssText = 'opacity:.6;font-size:12px;margin:4px 0 8px;';
-      balance.textContent = 'You have ' + store.acorns + ' 🌰.';
+      balance.textContent = 'You have ' + store.acorns + ' 🪙.';
       wrap.appendChild(balance);
 
       var row = document.createElement('div');
@@ -1111,7 +1317,7 @@
         var amount = Math.floor(Number(input.value));
         sendBtn.disabled = true;
         sendGift(giftTarget, amount).then(function () {
-          showToast('Gifted ' + amount + ' acorns to ' + friendName(giftTarget));
+          showToast('Gifted ' + amount + ' cosmetic coins to ' + friendName(giftTarget));
           activeGiftWith = null;
           renderDialog();
         }).catch(function (e) {
@@ -1217,18 +1423,18 @@
       body.appendChild(popupNote);
     }
 
-    function renderQuestsTab(body) {
-      ensureWeeklyQuests();
-      var acorns = document.createElement('div');
-      acorns.className = 'nwb-acorns';
-      acorns.textContent = '🌰 ' + store.acorns + ' acorns';
-      body.appendChild(acorns);
+    function renderQuestSection(body, bucketName, title, refreshText) {
+      var bucket = store.quests[bucketName];
+      var head = document.createElement('div');
+      head.style.cssText = 'font-weight:700;' + (bucketName === 'daily' ? '' : 'margin-top:16px;');
+      head.textContent = title;
+      body.appendChild(head);
 
-      store.quests.active.forEach(function (qid) {
+      bucket.active.forEach(function (qid) {
         var q = QUEST_BY_ID[qid];
         if (!q) return;
-        var claimed = isQuestClaimed(qid);
-        var progress = Math.min(questProgress(q.stat), q.target);
+        var claimed = isQuestClaimed(bucketName, qid);
+        var progress = Math.min(questProgress(bucketName, q.stat), q.target);
         var row = document.createElement('div');
         row.className = 'nwb-quest-row';
         var label = document.createElement('div');
@@ -1247,8 +1453,8 @@
           claimBtn.className = 'nwb-btn'; claimBtn.type = 'button'; claimBtn.tabIndex = -1;
           claimBtn.style.marginTop = '6px';
           claimBtn.disabled = claimed;
-          claimBtn.textContent = claimed ? ('Claimed +' + q.reward) : ('Claim +' + q.reward + ' acorns');
-          claimBtn.addEventListener('click', function () { if (claimQuest(qid)) renderDialog(); });
+          claimBtn.textContent = claimed ? ('Claimed +' + q.reward) : ('Claim +' + q.reward + ' cosmetic coins');
+          claimBtn.addEventListener('click', function () { if (claimQuest(bucketName, qid)) renderDialog(); });
           row.appendChild(claimBtn);
         }
         body.appendChild(row);
@@ -1256,44 +1462,70 @@
 
       var refreshNote = document.createElement('div');
       refreshNote.style.cssText = 'opacity:.5;font-size:11px;margin-top:10px;';
-      refreshNote.textContent = 'New quests every 7 days.';
+      refreshNote.textContent = refreshText;
       body.appendChild(refreshNote);
+    }
 
-      var head = document.createElement('div');
-      head.style.cssText = 'margin-top:16px;font-weight:700;';
-      head.textContent = 'Badges';
-      body.appendChild(head);
+    function renderQuestsTab(body) {
+      ensureAllQuests();
+      var coinsEl = document.createElement('div');
+      coinsEl.className = 'nwb-coins';
+      coinsEl.textContent = '🪙 ' + store.acorns + ' cosmetic coins';
+      body.appendChild(coinsEl);
 
-      BADGES.forEach(function (b) {
-        var owned = !!store.badges[b.id];
-        var row = document.createElement('div');
-        row.className = 'nwb-badge-row';
-        var emoji = document.createElement('div');
-        emoji.className = 'nwb-badge-emoji';
-        emoji.textContent = b.emoji;
-        var name = document.createElement('div');
-        name.style.flex = '1 1 auto';
-        name.textContent = b.name + (owned ? '' : ' - ' + b.cost + ' acorns');
-        var btn = document.createElement('button');
-        btn.className = 'nwb-btn'; btn.type = 'button'; btn.tabIndex = -1;
-        if (owned) {
-          btn.textContent = equippedBadge === b.id ? 'Equipped' : 'Wear';
-          btn.disabled = equippedBadge === b.id;
-          btn.addEventListener('click', function () { setEquippedBadge(equippedBadge === b.id ? null : b.id); renderDialog(); });
-        } else {
-          btn.textContent = 'Buy';
-          btn.disabled = store.acorns < b.cost;
-          btn.addEventListener('click', function () { if (buyBadge(b.id)) renderDialog(); });
-        }
-        row.appendChild(emoji); row.appendChild(name); row.appendChild(btn);
-        body.appendChild(row);
+      var adBtn = document.createElement('button');
+      adBtn.className = 'nwb-btn'; adBtn.type = 'button'; adBtn.tabIndex = -1;
+      adBtn.style.marginBottom = '10px';
+      adBtn.textContent = 'Watch an ad for +' + AD_REWARD_COINS + ' coins';
+      adBtn.addEventListener('click', function () {
+        adBtn.disabled = true;
+        watchAdForCoins().then(function (success) {
+          adBtn.disabled = false;
+          if (success) renderDialog(); else showToast('Ad skipped or failed - no coins this time.');
+        }).catch(function (e) {
+          adBtn.disabled = false;
+          showToast('Could not show an ad: ' + e.message);
+        });
       });
+      body.appendChild(adBtn);
 
-      var badgeNote = document.createElement('div');
-      badgeNote.style.cssText = 'opacity:.5;font-size:11px;margin-top:10px;';
-      badgeNote.textContent = 'Badges show as a small icon in the corner of your own screen only - ' +
-        'they never touch your equipped gear or your stats, on purpose.';
-      body.appendChild(badgeNote);
+      renderQuestSection(body, 'daily', 'Daily Quests', 'New quests every day.');
+      renderQuestSection(body, 'weekly', 'Weekly Quests', 'New quests every 7 days - harder, bigger payout.');
+
+      var legHead = document.createElement('div');
+      legHead.style.cssText = 'margin-top:16px;font-weight:700;';
+      legHead.textContent = 'Legendary';
+      body.appendChild(legHead);
+
+      var fbOwned = !!store.legendaryBows.fantasyBow;
+      var fbEquipped = store.equippedLegendaryBow === 'fantasyBow';
+      var fbRow = document.createElement('div');
+      fbRow.className = 'nwb-badge-row';
+      var fbEmoji = document.createElement('div');
+      fbEmoji.className = 'nwb-badge-emoji';
+      fbEmoji.textContent = '🏹';
+      var fbName = document.createElement('div');
+      fbName.style.flex = '1 1 auto';
+      fbName.textContent = 'Fantasy Bow (B2 reskin)' + (fbOwned ? '' : ' - ' + FANTASY_BOW_COST + ' cosmetic coins');
+      var fbBtn = document.createElement('button');
+      fbBtn.className = 'nwb-btn'; fbBtn.type = 'button'; fbBtn.tabIndex = -1;
+      if (fbOwned) {
+        fbBtn.textContent = fbEquipped ? 'Equipped' : 'Wear';
+        fbBtn.disabled = fbEquipped;
+        fbBtn.addEventListener('click', function () { equipFantasyBow(!fbEquipped); renderDialog(); });
+      } else {
+        fbBtn.textContent = 'Buy';
+        fbBtn.disabled = store.acorns < FANTASY_BOW_COST;
+        fbBtn.addEventListener('click', function () { if (unlockFantasyBow()) renderDialog(); });
+      }
+      fbRow.appendChild(fbEmoji); fbRow.appendChild(fbName); fbRow.appendChild(fbBtn);
+      body.appendChild(fbRow);
+
+      var legNote = document.createElement('div');
+      legNote.style.cssText = 'opacity:.5;font-size:11px;margin-top:10px;';
+      legNote.textContent = 'Changes what your own B2 looks like to you, and only to you - never a stat, ' +
+        'never anything another player’s game shows.';
+      body.appendChild(legNote);
     }
 
     // Rebuilds the whole dialog body from scratch - fine for a click-
@@ -1440,7 +1672,53 @@
     }
     injectMenuButton();
     setInterval(injectMenuButton, 1000);
-    setInterval(renderBadgeHud, 2000);
+
+    /* ================================================================ *
+     * A real "Cosmetic" category button in the game's own Shop dialog -
+     * same classes/structure as its own Bow/Arrow/Melee/Rewarded buttons
+     * (found live, in a real match: button.dialog-button.blueNight.
+     * wrinkledPaper > div.dialog-button-icon + span, inside a
+     * .paged-view-page-items-list). Opens this mod's own Quests tab
+     * (where the Fantasy Bow and future cosmetics live) rather than
+     * rebuilding the game's own deep per-slot browsing UI from scratch.
+     * ================================================================ */
+    var COSMETIC_TAB_ICON = 'data:image/svg+xml,' + encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">' +
+      '<circle cx="12" cy="12" r="9" fill="#e8b923" stroke="#7a5a0a" stroke-width="1.5"/>' +
+      '<text x="12" y="16.5" font-size="12" font-weight="700" text-anchor="middle" fill="#7a5a0a">C</text>' +
+      '</svg>'
+    );
+    function injectShopCosmeticTab() {
+      var list = document.querySelector('.paged-view-page-items-list');
+      if (!list) return;
+      // Only the shop's top-level category page has this exact list of
+      // siblings - reusing the same list class elsewhere (if it's ever
+      // reused) without a Bow/Melee/Arrow sibling would be the wrong page.
+      var isShopCategoryPage = Array.prototype.some.call(list.children, function (c) {
+        var t = (c.textContent || '').trim();
+        return t === 'Bow' || t === 'Melee' || t === 'Arrow';
+      });
+      if (!isShopCategoryPage) return;
+      if (Array.prototype.some.call(list.children, function (c) { return c.id === 'nwb-shop-cosmetic-tab'; })) return;
+
+      var btn = document.createElement('button');
+      btn.id = 'nwb-shop-cosmetic-tab';
+      btn.className = 'dialog-button blueNight wrinkledPaper';
+      btn.style.setProperty('--wrinkled-paper-seed', String(seed()));
+      var icon = document.createElement('div');
+      icon.className = 'dialog-button-icon';
+      icon.style.cssText = 'transform:scale(2.2);background-image:url("' + COSMETIC_TAB_ICON + '");';
+      var label = document.createElement('span');
+      label.textContent = 'Cosmetic';
+      btn.appendChild(icon); btn.appendChild(label);
+      btn.addEventListener('click', function (e) {
+        e.preventDefault(); e.stopPropagation();
+        activeWbTab = 'Quests';
+        openDialog();
+      });
+      list.appendChild(btn);
+    }
+    setInterval(injectShopCosmeticTab, 1000);
 
     /* ================================================================ *
      * 2b. Squad chat - a nicer floating panel around the game's own real
@@ -1486,8 +1764,12 @@
 
     PAGE.NarrowWarband = window.NarrowWarband = {
       store: store,
-      quests: { pool: QUEST_POOL, active: function () { return store.quests.active; }, claim: claimQuest },
-      badges: BADGES,
+      quests: {
+        dailyPool: DAILY_QUEST_POOL,
+        weeklyPool: WEEKLY_QUEST_POOL,
+        active: function (bucket) { return store.quests[bucket || 'daily'].active; },
+        claim: claimQuest   // claim(bucketName, questId)
+      },
       myWarbandId: myWarbandId,
       myCode: myCode,
       joinByCode: joinByCode,
@@ -1500,6 +1782,22 @@
       sendGift: sendGift,
       refreshFriends: refreshFriends,
       liveFriends: function () { return liveFriends; },
+      // See the big comment above loadFantasyBowModel for what this does
+      // and doesn't touch. grantFantasyBowForTesting() skips the acorn
+      // cost; unlockFantasyBow() is the real cost-gated path.
+      unlockFantasyBow: unlockFantasyBow,
+      watchAdForCoins: watchAdForCoins,
+      grantFantasyBowForTesting: grantFantasyBowForTesting,
+      equipFantasyBow: equipFantasyBow,
+      // Live-tunes the equipped bow's position/rotation/scale in the
+      // console while you're looking right at it - each first-person
+      // weapon view is local to your own client, so this is the only way
+      // to actually see and fix it. Call it once you're equipped and
+      // holding B2, then try e.g.:
+      //   NarrowWarband.fantasyBowObject().position.z += 0.05
+      //   NarrowWarband.fantasyBowObject().rotation.x += 0.1
+      // and report back whatever position/rotation ends up looking right.
+      fantasyBowObject: function () { return fantasyBowGroup; },
       patchState: patchState
     };
 
