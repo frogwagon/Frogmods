@@ -204,7 +204,7 @@ never spills into an unrelated stat.
   the one function directly instead, so nothing about how the game sees
   itself changes.
 
-### [Warband (Beta)](narrow-one-warband.user.js)
+### [Warband](narrow-one-warband.user.js)
 
 A friends system for a game that has none - checked directly in the game's
 own code, there's no friends list, no join-request approval, no presence at
@@ -229,19 +229,25 @@ own local storage. You can also watch a real rewarded ad (through the
 game's own existing ad provider) for a coin top-up - only pays out on a
 genuinely completed ad, never a fake credit.
 
-**A real "Cosmetic" tab in the game's own Shop dialog** - styled to match
-its native Bow/Arrow/Melee/Rewarded tabs, opening this mod's own cosmetic
-shop. Right now that's one item: a fantasy-styled reskin for your B2
-(medium bow), a real downloaded 3D model (CC0-licensed, not the mod's own
-invention), swapped in as pure local render state - never a skin swap, since
-the game computes your equipped skin and your combat stats from the same
-field, and changing that locally risks nudging your own stats too. Only
-ever visible on your own screen.
+**The Cosmetic Shop - the game's own shop, copied and edited.** Reached from a
+real "Cosmetic" tab in the Shop dialog (styled like its native tabs). It is
+built out of the game's own dialog and item-grid classes, so it looks native
+and shows the same live 3D preview of every item, but everything about
+buying and wearing is this mod's own: every bow, melee and arrow skin in the
+real shop is listed at 1/100th of the real price in cosmetic coins, the real
+purchase code is never reached, and wearing one only changes how the weapon
+looks on your own screen - it never touches your real equipped gear or your
+stats, and no tile shows a stat bonus it doesn't give. Melee is the one
+caveat: in this game a melee "skin" is really a different weapon, so a
+cosmetic one only reskins a melee weapon you already carry. Also in there: a
+fantasy-styled reskin for your Medium Bow, a real downloaded CC0 3D model.
+Everything can be taken off again: click a worn tile to un-wear it, use
+"Take off all" for the current category, or "Take off" on the Fantasy Bow row.
+Gear and helmets aren't in yet.
 
 - A **Warband** button appears in the main menu.
-- **Beta**: tested against a local fake relay and the real game with a
-  couple of real accounts, but it's newer and less battle-tested than the
-  rest of these - expect rough edges, especially in the friends system.
+- Tested against a local fake relay and the real game with a couple of real
+  accounts.
 - Needs its own relay server - a one-time deploy to your own free
   Cloudflare account, see [warband-server/README.md](warband-server/README.md).
   An id is as sensitive as a squad code - anyone who has it can act as you

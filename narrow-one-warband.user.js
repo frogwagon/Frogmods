@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Warband (Beta)
+// @name         Warband
 // @namespace    narrowone-warband
-// @version      1.9.1
-// @description  BETA - Friend requests, join/invite permission, messaging and acorn gifts by a Warband ID (needs its own small relay server - see warband-server/), plus weekly quests that pay out a local cosmetic currency.
+// @version      2.1.0
+// @description  Friend requests, join/invite permission, messaging and acorn gifts by a Warband ID (needs its own small relay server - see warband-server/), plus daily/weekly quests and a Cosmetic Shop (local-only looks, paid in cosmetic coins).
 // @author       Frogwagon
 // @match        https://narrow.one/*
 // @run-at       document-start
@@ -10,12 +10,10 @@
 // ==/UserScript==
 
 /*
- * Warband (Beta)  -  Narrow One
- * ------------------------------
- * BETA. Tested against a local fake relay and against the real game with a
- * couple of real accounts, but it hasn't had the mileage the other mods
- * here have - the friends system in particular is new enough that rough
- * edges are expected. Needs its own relay server deployed before the
+ * Warband  -  Narrow One
+ * -----------------------
+ * Tested against a local fake relay and against the real game with a
+ * couple of real accounts. Needs its own relay server deployed before the
  * Friends tab does anything at all - see warband-server/README.md.
  *
  * 1. Friends, v2 - request/accept by a Warband id (a random id this mod
@@ -63,8 +61,8 @@
  *    worth cheating for. The relay only checks that you're actually
  *    friends and caps the amount to something sane per gift.
  *
- * 5. A fantasy-styled reskin for your B2 (medium bow) - a Legendary shop
- *    entry in the Quests tab, 100 cosmetic coins. The exact model originally
+ * 5. A fantasy-styled reskin for your B2 (medium bow) - a featured row at the
+ *    top of the Cosmetic Shop (item 7), 100 cosmetic coins. The exact model originally
  *    asked for (a Sketchfab piece) turned out to have no license and no
  *    download option at all - checked directly on the page. This uses a
  *    real substitute instead of a from-scratch guess: the Elven Leaf
@@ -91,16 +89,27 @@
  *    genuinely completed ad (checked directly in the bundle) - skip,
  *    fail, or an adblocker all just pay nothing, no fake credit.
  *
- * 7. A real "Cosmetic" button in the game's own Shop dialog, matching its
- *    native Bow/Arrow/Melee/Rewarded tabs, that opens this mod's own
- *    cosmetic shop (currently just the Fantasy Bow) rather than
- *    rebuilding the game's whole per-slot browsing UI from scratch. The
- *    Shop's own dialog sits in a much higher stacking tier than anything
- *    this mod can reach from inside gameWrapper, so no z-index on our own
- *    dialog could ever render above it (confirmed live) - this closes the
- *    Shop's dialog first (its own real Back button, clicked repeatedly
- *    until none remain, since a synthetic Escape doesn't trigger its
- *    close handling) and only opens ours once that's done.
+ * 7. The Cosmetic Shop - the game's own shop, copied and edited. Reached
+ *    from a real "Cosmetic" tab added to the Shop dialog (matching its
+ *    native Bow/Arrow/Melee/Rewarded tabs), from the Quests tab, or
+ *    NarrowWarband.openCosmeticShop(). It is built from the game's own
+ *    dialog, item-grid and item-tile classes (reached through instances
+ *    the real shop creates, since the bundle doesn't export them), so it
+ *    looks native, draws the same live 3D previews, and stacks through
+ *    the game's own dialogManager instead of fighting it. Every bow,
+ *    melee and arrow skin in the real shop is listed, at 1/100th of the
+ *    real price in cosmetic coins. Buying and wearing are entirely this
+ *    mod's own: the real purchase code is never reached, statClasses are
+ *    stripped so no tile advertises a bonus it doesn't give, and wearing
+ *    never touches equippedSkinData/equippedSkinIds (which feed your real
+ *    stats) - it only merges the cosmetic skin ids into a copy inside
+ *    your own weapon's loader config, so it only ever shows on your own
+ *    screen. Melee is the one caveat: a melee "skin" is really a
+ *    different weapon in this game, so a cosmetic one only reskins a
+ *    melee weapon you already carry and never gives you one. Gear and
+ *    helmets are not in yet - they need the whole-body model rebuilt
+ *    rather than a single weapon mesh swapped, which hasn't been
+ *    verified.
  */
 
 (function () {
@@ -301,7 +310,9 @@
       lastClearedMessageAt: 0,
       shownRequestIds: [],  // requests already popped up once - see the note by shownRequestIds below
       legendaryBows: {},        // id -> unlockedAt - see the fantasy bow section below
-      equippedLegendaryBow: null
+      equippedLegendaryBow: null,
+      cosmeticItems: {},        // real shop item id -> boughtAt, paid in cosmetic coins - see the cosmetic shop section
+      cosmeticEquipped: []      // real shop item ids currently worn (local visuals only)
     };
     (function loadStore() {
       try {
@@ -322,6 +333,8 @@
             store.shownRequestIds = Array.isArray(saved.shownRequestIds) ? saved.shownRequestIds : [];
             store.legendaryBows = saved.legendaryBows && typeof saved.legendaryBows === 'object' ? saved.legendaryBows : {};
             store.equippedLegendaryBow = typeof saved.equippedLegendaryBow === 'string' ? saved.equippedLegendaryBow : null;
+            store.cosmeticItems = saved.cosmeticItems && typeof saved.cosmeticItems === 'object' ? saved.cosmeticItems : {};
+            store.cosmeticEquipped = Array.isArray(saved.cosmeticEquipped) ? saved.cosmeticEquipped : [];
           }
         }
       } catch (e) {}
@@ -970,6 +983,414 @@
     setInterval(function () { try { fantasyBowTick(); } catch (e) {} }, 1000);
 
     /* ================================================================ *
+     * 3c. Cosmetic Shop - the game's OWN shop, copied and edited.
+     *
+     * Built out of the game's own classes rather than a hand-drawn UI: its
+     * dialog base class, its item grid (with the live 3D preview it draws
+     * for every item - the shop has no names or icons at all, only those
+     * previews) and its item tile. Those classes aren't exported from the
+     * minified bundle, but each one is reachable from an instance the shop
+     * itself creates, so harvestGameClasses() opens the real shop once,
+     * takes the constructors, and closes it again.
+     *
+     * Everything about buying and wearing is ours, never the game's:
+     *  - Items are shallow copies of the real shop items with the price set
+     *    to real / 100 (min 1), paid in cosmetic coins. Free-to-everyone
+     *    base items are left out (nothing to sell), and anything that
+     *    would make the grid treat an item as owned or as needing the ad /
+     *    Pelican Party+ flow is stripped from the copy.
+     *  - statClasses are stripped from the copies, so a tile's tooltip
+     *    never advertises a stat bonus the cosmetic doesn't give.
+     *  - Clicking a locked tile calls this.openConfirmPurchaseDialog() at
+     *    click time, so it's replaced per tile with our own confirm dialog -
+     *    the game's real purchase code is never reached (checked live:
+     *    zero calls to shopState.purchaseItem).
+     *  - Wearing never touches equippedSkinData/equippedSkinIds (those feed
+     *    your real stats). Each weapon rebuilds its own visuals through
+     *    bowAssetLoader.setConfig({bowId, teamId, skins, arrowSkin}) built
+     *    from your equipped skin data; wrapping that one call on YOUR
+     *    weapon merges the cosmetic skin ids into a copy first, so it
+     *    survives respawns and weapon switches by construction.
+     *
+     * Melee is the one place this can't be a pure reskin: in this game a
+     * melee "skin" is really a different weapon (equipping one gives you
+     * that weapon, with its own damage). Handing those out would break
+     * "no stats past your own gear", so a cosmetic melee item only changes
+     * the look of a melee weapon you already carry, and does nothing if
+     * you have none.
+     * ================================================================ */
+
+    var COSMETIC_UNPRICED_COST = 50;   // ad-unlock / Plus-only items have no coin price to divide
+    var COSMETIC_BOW_TYPES = [
+      { id: 'smallBow', label: 'Small Bow' },
+      { id: 'mediumBow', label: 'Medium Bow' },
+      { id: 'largeBow', label: 'Large Bow' },
+      { id: 'smallCrossbow', label: 'Small Crossbow' },
+      { id: 'repeatingCrossbow', label: 'Repeating Crossbow' },
+      { id: 'largeCrossbow', label: 'Large Crossbow' }
+    ];
+    var COSMETIC_CATEGORIES = COSMETIC_BOW_TYPES.map(function (b) {
+      return { id: b.id, label: b.label, match: function (it) { return !!(it.bowSkin && it.bowSkin.bowId === b.id); } };
+    }).concat([
+      { id: 'melee', label: 'Melee', match: function (it) { return !!it.meleeSkin; } },
+      { id: 'arrow', label: 'Arrows', match: function (it) { return !!it.arrowSkin; } }
+    ]);
+
+    function shopItemsRaw() {
+      var g = findGame();
+      var d = g && g.config && g.config.shopConfig && g.config.shopConfig.loadedConfigData;
+      return d && Array.isArray(d.purchasableItems) ? d.purchasableItems : null;
+    }
+    var cosmeticIndexSource = null, cosmeticIndex = null;
+    function cosmeticItemById(id) {
+      var all = shopItemsRaw();
+      if (!all) return null;
+      if (all !== cosmeticIndexSource) {
+        cosmeticIndexSource = all;
+        cosmeticIndex = {};
+        all.forEach(function (it) { cosmeticIndex[it.id] = it; });
+      }
+      return cosmeticIndex[id] || null;
+    }
+    function cosmeticPriceOf(it) {
+      return it.price > 0 ? Math.max(1, Math.ceil(it.price / 100)) : COSMETIC_UNPRICED_COST;
+    }
+    // Has to cost something to be worth listing: base items everyone owns
+    // for free have no price, no ad unlock and no Plus requirement.
+    function cosmeticListable(it) {
+      if (it.shopVisibility === 'hidden') return false;
+      return it.price > 0 || !!it.hasRewardedAd || !!(it.requiredPeliEntitlements && it.requiredPeliEntitlements.length);
+    }
+    function cosmeticClone(it) {
+      var c = {};
+      Object.keys(it).forEach(function (k) { c[k] = it[k]; });
+      c.price = cosmeticPriceOf(it);
+      delete c.statClasses;
+      delete c.preventUnequip;   // a cosmetic must always be able to come off
+      delete c.hasRewardedAd;
+      delete c.requiredPeliEntitlements;
+      delete c.shopVisibility;
+      delete c.seasonalRange;
+      return c;
+    }
+    function cosmeticOwnedSet() { return new Set(Object.keys(store.cosmeticItems)); }
+
+    function buyCosmetic(id) {
+      var it = cosmeticItemById(id);
+      if (!it || store.cosmeticItems[id]) return false;
+      var price = cosmeticPriceOf(it);
+      if (store.acorns < price) return false;
+      store.acorns -= price;
+      store.cosmeticItems[id] = Date.now();
+      saveStore();
+      return true;
+    }
+    function setCosmeticEquipped(id, on) {
+      var it = cosmeticItemById(id);
+      if (!it || !store.cosmeticItems[id]) return false;
+      var list = store.cosmeticEquipped.filter(function (x) { return x !== id; });
+      if (on) {
+        var mySlots = it.slots || [];
+        list = list.filter(function (x) {
+          var o = cosmeticItemById(x);
+          if (!o) return false;
+          if (it.meleeSkin && o.meleeSkin) return false;
+          if (it.arrowSkin && o.arrowSkin) return false;
+          return !(o.slots || []).some(function (s) { return mySlots.indexOf(s) !== -1; });
+        });
+        list.push(id);
+      }
+      store.cosmeticEquipped = list;
+      saveStore();
+      refreshCosmeticWeapons();
+      return true;
+    }
+    function unequipCosmeticCategory(cat) {
+      var before = store.cosmeticEquipped.length;
+      store.cosmeticEquipped = store.cosmeticEquipped.filter(function (id) {
+        var it = cosmeticItemById(id);
+        return !(it && cat.match(it));
+      });
+      if (store.cosmeticEquipped.length === before) return false;
+      saveStore();
+      refreshCosmeticWeapons();
+      return true;
+    }
+    function cosmeticEquippedItems() {
+      return store.cosmeticEquipped.map(cosmeticItemById).filter(Boolean);
+    }
+
+    /* ---- applying to your own weapons ---- */
+
+    function copyObj(o) {
+      var c = {};
+      Object.keys(o).forEach(function (k) { c[k] = o[k]; });
+      return c;
+    }
+    function cosmeticBowConfig(bw, cfg) {
+      var items = cosmeticEquippedItems().filter(function (it) {
+        return (it.bowSkin && it.bowSkin.bowId === cfg.bowId) || it.arrowSkin;
+      });
+      if (!items.length) return cfg;
+      var skins = findGame().skins;
+      var base = (bw.player && bw.player.equippedSkinData) || {};
+      var set = new Set(base.equippedSkinIds || []);
+      items.forEach(function (it) { skins.addItemAndRemoveDuplicateSlots(set, it.id); });
+      var merged = copyObj(base);
+      merged.equippedSkinIds = Array.from(set);
+      var res = skins.skinNetworkDataToBowAssetData(cfg.bowId, merged);
+      var out = copyObj(cfg);
+      out.skins = res.skins;
+      out.arrowSkin = res.arrowSkin;
+      return out;
+    }
+    function cosmeticMeleeConfig(cfg) {
+      var it = cosmeticEquippedItems().filter(function (x) { return x.meleeSkin && x.meleeSkin.skin; })[0];
+      if (!it) return cfg;
+      var out = copyObj(cfg);
+      out.skinAssetName = it.meleeSkin.skin;
+      return out;
+    }
+    var patchedLoaders = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
+    function patchWeaponLoaders() {
+      var p = findPlayer();
+      if (!p || !patchedLoaders) return;
+      var bw = p.bowWeapon;
+      var bl = bw && bw.bowAssetLoader;
+      if (bl && typeof bl.setConfig === 'function' && !patchedLoaders.has(bl)) {
+        patchedLoaders.add(bl);
+        var origBow = bl.setConfig;
+        bl.setConfig = function (cfg) {
+          try { cfg = cosmeticBowConfig(bw, cfg); } catch (e) {}
+          return origBow.call(this, cfg);
+        };
+        try { bw.playerSkinUpdated(); } catch (e) {}
+      }
+      var mw = p.meleeWeapon;
+      var ml = mw && mw.meleeAssetLoader;
+      if (ml && typeof ml.setConfig === 'function' && !patchedLoaders.has(ml)) {
+        patchedLoaders.add(ml);
+        var origMelee = ml.setConfig;
+        ml.setConfig = function (cfg) {
+          try { cfg = cosmeticMeleeConfig(cfg); } catch (e) {}
+          return origMelee.call(this, cfg);
+        };
+        try { p.updateActiveMeleeWeapon(); } catch (e) {}
+      }
+    }
+    function refreshCosmeticWeapons() {
+      var p = findPlayer();
+      if (!p) return;
+      patchWeaponLoaders();
+      try { if (p.bowWeapon) p.bowWeapon.playerSkinUpdated(); } catch (e) {}
+      try { p.updateActiveMeleeWeapon(); } catch (e) {}
+    }
+    setInterval(function () { try { if (store.cosmeticEquipped.length) patchWeaponLoaders(); } catch (e) {} }, 1000);
+
+    /* ---- harvesting the game's own UI classes ---- */
+
+    var gameClasses = null;
+    function harvestGameClasses() {
+      if (gameClasses) return Promise.resolve(gameClasses);
+      try {
+        var g = findGame();
+        var all = shopItemsRaw();
+        if (!g || !g.mainMenu || typeof g.mainMenu.openShopDialog !== 'function' || !all || !all.length) {
+          return Promise.reject(new Error('the shop is not loaded yet - try again in a moment'));
+        }
+        var mm = g.mainMenu;
+        var hadShop = !!mm.shopDialog;
+        var sd = mm.openShopDialog();
+        if (!hadShop) sd.el.style.visibility = 'hidden';
+        var hadView = !!sd.currentCustomizationView;
+        if (!hadView) sd.showPresetCustomizationView(0);
+        var view = sd.currentCustomizationView;
+        var tmp = document.createElement('div');
+        view.createShopItemsGrid(tmp, { filterOptions: { shopCategoriesFilter: ['head'] } });
+        var entry = view.createdGrids.get(tmp);
+        var sample = all.filter(cosmeticListable)[0] || all[0];
+        entry.grid.loadShopItems([sample], { renderOptions: { colorMultiplier: [1, 1, 1], gender: 'male' }, dialog: sd, scrollingContainer: tmp });
+        var firstItem = entry.grid.shopItems.values().next().value;
+        var found = {
+          Dialog: Object.getPrototypeOf(sd.constructor),
+          Grid: entry.grid.constructor,
+          Item: firstItem && firstItem.constructor
+        };
+        view.destroyShopItemsGrid(tmp);
+        if (!hadView) sd.hideCustomizationView();
+        if (!hadShop) sd.close();
+        if (!found.Dialog || !found.Grid || !found.Item) throw new Error('could not reach the shop\'s classes');
+        gameClasses = found;
+        return Promise.resolve(gameClasses);
+      } catch (e) {
+        return Promise.reject(e);
+      }
+    }
+
+    /* ---- the dialog ---- */
+
+    var cosmeticDialog = null;
+    function cosmeticGender() {
+      try {
+        var p = findPlayer();
+        if (p && p.equippedSkinData && p.equippedSkinData.gender) return p.equippedSkinData.gender;
+        var g = findGame();
+        var preset = g && g.skins && g.skins.getPreset(0);
+        if (preset && preset.gender) return preset.gender;
+      } catch (e) {}
+      return 'male';
+    }
+    function confirmCosmeticPurchase(C, g, cfg, renderOptions, done) {
+      var gw = g.mainMenu.gameWrapper;
+      var dlg = new C.Dialog(gw, { title: 'Confirm your purchase', testLabel: 'cosmeticConfirm' });
+      var pv = new C.Item(gw, cfg, { usage: 'preview', renderOptions: renderOptions, dialog: dlg });
+      dlg.el.appendChild(pv.el);
+      var line = document.createElement('div');
+      line.className = 'nwb-cs-confirm-line';
+      line.textContent = 'Costs ' + cfg.price + ' cosmetic coin' + (cfg.price === 1 ? '' : 's') + ' - you have ' + store.acorns + '. Only changes how it looks to you, never a stat.';
+      dlg.el.appendChild(line);
+      dlg.addButtonsContainer();
+      dlg.addButton({ text: 'Cancel', testLabel: 'cancel', onClick: function () { dlg.close(); } });
+      dlg.addButton({
+        testLabel: 'purchase', showCurrency: true, currency: cfg.price,
+        onClick: function () {
+          if (buyCosmetic(cfg.id)) {
+            setCosmeticEquipped(cfg.id, true);
+            showToast('Bought and worn! It only shows on your own screen.');
+            dlg.close();
+            done();
+          } else {
+            showToast('Not enough cosmetic coins - you have ' + store.acorns + '.');
+          }
+        }
+      });
+      dlg.addOnCloseCb(function () { try { pv.destructor(); } catch (e) {} });
+      g.dialogManager.addDialog(dlg);
+    }
+
+    function buildCosmeticDialog(C, g) {
+      var gw = g.mainMenu.gameWrapper;
+      var allItems = shopItemsRaw();
+      var renderOptions = { colorMultiplier: [1, 1, 1], gender: cosmeticGender() };
+      var dlg = new C.Dialog(gw, { title: 'Cosmetic Shop', testLabel: 'cosmeticShop' });
+      dlg.el.classList.add('nwb-cs');
+      cosmeticDialog = dlg;
+
+      var coinsEl = document.createElement('div');
+      coinsEl.className = 'nwb-cs-coins';
+      dlg.el.appendChild(coinsEl);
+
+      // The Fantasy Bow isn't a real shop item (it's an outside 3D model),
+      // so it can't go through the grid - a featured row instead.
+      var fbRow = document.createElement('div');
+      fbRow.className = 'nwb-cs-featured';
+      var fbLabel = document.createElement('span');
+      fbLabel.textContent = '🏹 Fantasy Bow (Medium Bow reskin)';
+      var fbBtn = document.createElement('button');
+      fbBtn.type = 'button'; fbBtn.className = 'nwb-cs-btn';
+      fbRow.appendChild(fbLabel); fbRow.appendChild(fbBtn);
+      dlg.el.appendChild(fbRow);
+
+      var catRow = document.createElement('div');
+      catRow.className = 'nwb-cs-cats';
+      dlg.el.appendChild(catRow);
+
+      var takeOffBtn = document.createElement('button');
+      takeOffBtn.type = 'button'; takeOffBtn.className = 'nwb-cs-btn nwb-cs-takeoff';
+      takeOffBtn.textContent = 'Take off all';
+      takeOffBtn.title = 'Stop wearing every cosmetic in the category you are looking at.';
+      takeOffBtn.addEventListener('click', function () {
+        unequipCosmeticCategory(activeCat);
+        refreshGrid();
+        refreshChrome();
+      });
+
+      var noteEl = document.createElement('div');
+      noteEl.className = 'nwb-cs-note';
+      dlg.el.appendChild(noteEl);
+
+      var scroller = document.createElement('div');
+      scroller.className = 'nwb-cs-scroll';
+      dlg.el.appendChild(scroller);
+      var grid = new C.Grid(gw);
+      scroller.appendChild(grid.el);
+      var gridOptions = { renderOptions: renderOptions, dialog: dlg, scrollingContainer: scroller };
+
+      var activeCat = COSMETIC_CATEGORIES[1];
+      var catButtons = {};
+
+      function refreshChrome() {
+        coinsEl.textContent = '🪙 ' + store.acorns + ' cosmetic coins';
+        var owned = !!store.legendaryBows.fantasyBow;
+        var worn = store.equippedLegendaryBow === 'fantasyBow';
+        fbBtn.textContent = owned ? (worn ? 'Take off' : 'Wear') : ('Buy - ' + FANTASY_BOW_COST);
+        fbBtn.disabled = owned ? false : store.acorns < FANTASY_BOW_COST;
+        var anyWorn = store.cosmeticEquipped.some(function (id) { var it = cosmeticItemById(id); return it && activeCat.match(it); });
+        takeOffBtn.disabled = !anyWorn;
+        COSMETIC_CATEGORIES.forEach(function (c) { catButtons[c.id].classList.toggle('nwb-cs-active', c === activeCat); });
+      }
+      function refreshGrid() {
+        grid.setPurchasedItems(cosmeticOwnedSet());
+        grid.setSelectedItems(new Set(store.cosmeticEquipped));
+      }
+      function wireGrid() {
+        grid.shopItems.forEach(function (item) {
+          item.openConfirmPurchaseDialog = function () {
+            confirmCosmeticPurchase(C, g, item.config, renderOptions, function () { refreshChrome(); refreshGrid(); });
+          };
+        });
+      }
+      function loadCategory(cat) {
+        activeCat = cat;
+        noteEl.textContent = cat.id === 'melee'
+          ? 'Melee cosmetics only change the look of a melee weapon you already have equipped - they never give you one.'
+          : '';
+        var list = allItems.filter(function (it) { return cosmeticListable(it) && cat.match(it); }).map(cosmeticClone);
+        grid.loadShopItems(list, gridOptions);
+        wireGrid();
+        refreshGrid();
+        refreshChrome();
+        scroller.scrollTop = 0;
+      }
+
+      fbBtn.addEventListener('click', function () {
+        if (store.legendaryBows.fantasyBow) equipFantasyBow(store.equippedLegendaryBow !== 'fantasyBow');
+        else unlockFantasyBow();
+        refreshChrome();
+      });
+      COSMETIC_CATEGORIES.forEach(function (c) {
+        var b = document.createElement('button');
+        b.type = 'button'; b.className = 'nwb-cs-btn'; b.textContent = c.label;
+        b.addEventListener('click', function () { loadCategory(c); });
+        catRow.appendChild(b);
+        catButtons[c.id] = b;
+      });
+      catRow.appendChild(takeOffBtn);
+      grid.onSelectedItemChangeRequest(function (id, want) {
+        setCosmeticEquipped(id, want);
+        refreshGrid();
+      });
+
+      dlg.addButtonsContainer();
+      dlg.addButton({ text: 'Done', testLabel: 'done', onClick: function () { dlg.close(); } });
+      dlg.addOnCloseCb(function () {
+        try { grid.destructor(); } catch (e) {}
+        if (cosmeticDialog === dlg) cosmeticDialog = null;
+      });
+      g.dialogManager.addDialog(dlg);
+      loadCategory(activeCat);
+    }
+
+    function openCosmeticShop() {
+      if (cosmeticDialog && !cosmeticDialog.closed) return Promise.resolve();
+      return harvestGameClasses().then(function (C) {
+        buildCosmeticDialog(C, findGame());
+      }).catch(function (e) {
+        showToast('Cosmetic shop: ' + (e && e.message ? e.message : e));
+      });
+    }
+
+    /* ================================================================ *
      * Look and feel
      * ================================================================ */
 
@@ -1012,6 +1433,20 @@
       '#nwb-dialog .nwb-badge-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; ' +
         'border-bottom: 1px solid rgba(0,0,0,.1); }',
       '#nwb-dialog .nwb-badge-emoji { font-size: 22px; }',
+      '.nwb-cs { width: 720px !important; max-width: 94vw; color: #fff; }',
+      '.nwb-cs .nwb-cs-coins { font: 800 15px system-ui, sans-serif; margin: 4px 0 8px; }',
+      '.nwb-cs .nwb-cs-featured { display: flex; align-items: center; justify-content: space-between; gap: 10px; ' +
+        'padding: 8px 10px; margin-bottom: 8px; background: rgba(255,255,255,.08); border-radius: 8px; ' +
+        'font: 700 13px system-ui, sans-serif; }',
+      '.nwb-cs button.nwb-cs-btn { font: 700 12px system-ui, sans-serif; padding: 5px 10px; border-radius: 6px; ' +
+        'border: none; background: rgba(255,255,255,.16); color: #fff; cursor: pointer; }',
+      '.nwb-cs button.nwb-cs-btn:disabled { opacity: .5; cursor: default; }',
+      '.nwb-cs button.nwb-cs-btn.nwb-cs-active { background: #ffb43b; color: #231a05; }',
+      '.nwb-cs button.nwb-cs-btn.nwb-cs-takeoff { margin-left: auto; background: rgba(255,110,110,.35); }',
+      '.nwb-cs .nwb-cs-cats { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }',
+      '.nwb-cs .nwb-cs-note { opacity: .7; font: 600 11px system-ui, sans-serif; margin-bottom: 6px; }',
+      '.nwb-cs .nwb-cs-scroll { max-height: 340px; overflow-y: auto; }',
+      '.nwb-cs-confirm-line { color: #fff; font: 600 12px system-ui, sans-serif; text-align: center; margin: 8px 12px; }',
       '#nwb-chat { position: fixed; left: 16px; bottom: 16px; width: 300px; max-height: 240px; ' +
         'background: rgba(15,15,20,.55); border-radius: 10px; padding: 8px; display: none; ' +
         'flex-direction: column; z-index: 140; font: 600 12px system-ui, sans-serif; color: #fff; }',
@@ -1498,40 +1933,20 @@
       renderQuestSection(body, 'daily', 'Daily Quests', 'New quests every day.');
       renderQuestSection(body, 'weekly', 'Weekly Quests', 'New quests every 7 days - harder, bigger payout.');
 
-      var legHead = document.createElement('div');
-      legHead.style.cssText = 'margin-top:16px;font-weight:700;';
-      legHead.textContent = 'Legendary';
-      body.appendChild(legHead);
-
-      var fbOwned = !!store.legendaryBows.fantasyBow;
-      var fbEquipped = store.equippedLegendaryBow === 'fantasyBow';
-      var fbRow = document.createElement('div');
-      fbRow.className = 'nwb-badge-row';
-      var fbEmoji = document.createElement('div');
-      fbEmoji.className = 'nwb-badge-emoji';
-      fbEmoji.textContent = '🏹';
-      var fbName = document.createElement('div');
-      fbName.style.flex = '1 1 auto';
-      fbName.textContent = 'Fantasy Bow (B2 reskin)' + (fbOwned ? '' : ' - ' + FANTASY_BOW_COST + ' cosmetic coins');
-      var fbBtn = document.createElement('button');
-      fbBtn.className = 'nwb-btn'; fbBtn.type = 'button'; fbBtn.tabIndex = -1;
-      if (fbOwned) {
-        fbBtn.textContent = fbEquipped ? 'Equipped' : 'Wear';
-        fbBtn.disabled = fbEquipped;
-        fbBtn.addEventListener('click', function () { equipFantasyBow(!fbEquipped); renderDialog(); });
-      } else {
-        fbBtn.textContent = 'Buy';
-        fbBtn.disabled = store.acorns < FANTASY_BOW_COST;
-        fbBtn.addEventListener('click', function () { if (unlockFantasyBow()) renderDialog(); });
-      }
-      fbRow.appendChild(fbEmoji); fbRow.appendChild(fbName); fbRow.appendChild(fbBtn);
-      body.appendChild(fbRow);
-
-      var legNote = document.createElement('div');
-      legNote.style.cssText = 'opacity:.5;font-size:11px;margin-top:10px;';
-      legNote.textContent = 'Changes what your own B2 looks like to you, and only to you - never a stat, ' +
-        'never anything another player’s game shows.';
-      body.appendChild(legNote);
+      var shopHead = document.createElement('div');
+      shopHead.style.cssText = 'margin-top:16px;font-weight:700;';
+      shopHead.textContent = 'Cosmetic Shop';
+      body.appendChild(shopHead);
+      var shopNote = document.createElement('div');
+      shopNote.style.cssText = 'opacity:.6;font-size:12px;margin:4px 0 8px;';
+      shopNote.textContent = 'The game’s own shop, spendable with cosmetic coins at 1/100th of the real price - ' +
+        'bow, melee and arrow skins that only change how things look on your own screen, never a stat.';
+      body.appendChild(shopNote);
+      var shopBtn = document.createElement('button');
+      shopBtn.className = 'nwb-btn'; shopBtn.type = 'button'; shopBtn.tabIndex = -1;
+      shopBtn.textContent = 'Open Cosmetic Shop';
+      shopBtn.addEventListener('click', function () { openCosmeticShop(); });
+      body.appendChild(shopBtn);
     }
 
     // Rebuilds the whole dialog body from scratch - fine for a click-
@@ -1593,7 +2008,7 @@
 
       var title = document.createElement('h2');
       title.className = 'dialogTitle blueNight';
-      title.textContent = 'Warband (Beta)';
+      title.textContent = 'Warband';
       wbDialogEl.appendChild(title);
 
       var list = document.createElement('div');
@@ -1654,7 +2069,7 @@
 
       var b = document.createElement('button');
       b.className = 'wrinkledPaper main-menu-button';
-      b.setAttribute('aria-label', 'Warband (Beta)');
+      b.setAttribute('aria-label', 'Warband');
       b.tabIndex = -1;
       b.style.setProperty('--wrinkled-paper-seed', seed());
 
@@ -1667,7 +2082,7 @@
       var l = document.createElement('div');
       l.className = 'main-menu-button-text whiteBigText blueNight';
       l.setAttribute('aria-hidden', 'true');
-      l.textContent = 'Warband (Beta)';
+      l.textContent = 'Warband';
 
       c.appendChild(b); c.appendChild(l);
       b.addEventListener('click', function (e) {
@@ -1725,40 +2140,16 @@
       var label = document.createElement('span');
       label.textContent = 'Cosmetic';
       btn.appendChild(icon); btn.appendChild(label);
-      // Found live: the Shop's own dialog root sits in a stacking context
-      // far above ours (its outer wrapper is z-index 99999, a whole
-      // different tier from the "dialog wrinkledPaper" z-index 100 class
-      // both it and our own dialog otherwise share) - no z-index we set
-      // on our own dialog can out-rank that from inside gameWrapper, it's
-      // a stacking-context ceiling, not a number to beat. Confirmed live:
-      // even our dialog at z-index 1000000 stayed trapped behind it.
-      //
-      // A synthetic Escape keydown does NOT close it (also confirmed live
-      // - the Shop likely gates its close handling on a trusted event),
-      // but clicking its own real Back button
-      // (button.header-back-button[aria-label="Back"]) does, and each
-      // click only pops one level of its own navigation stack (Edit
-      // Loadout > Bow > Handle > ... can be several deep) - so this
-      // clicks it repeatedly until none remain, confirmed live to fully
-      // clear the Shop's entire dialog stack, before opening ours onto
-      // the now-clean screen instead of ever trying to layer on top of
-      // the Shop's own dialog.
-      function closeNativeShopDialog() {
-        var tries = 0;
-        (function step() {
-          var backBtn = document.querySelector('button.header-back-button[aria-label="Back"]');
-          if (!backBtn || ++tries > 10) return;
-          backBtn.click();
-          setTimeout(step, 120);
-        })();
-      }
+      // Opened through the game's own dialogManager (see the cosmetic
+      // shop section), which owns dialog stacking - so it lands on top of
+      // the Shop properly without closing it. (A hand-built dialog
+      // appended to gameWrapper can't do that: the Shop sits in a higher
+      // stacking tier than anything placed there, confirmed live, which
+      // is why an earlier version had to click the Shop's Back button
+      // repeatedly to close it first.)
       btn.addEventListener('click', function (e) {
         e.preventDefault(); e.stopPropagation();
-        closeNativeShopDialog();
-        setTimeout(function () {
-          activeWbTab = 'Quests';
-          openDialog();
-        }, 1300);
+        openCosmeticShop();
       });
       list.appendChild(btn);
     }
@@ -1830,6 +2221,18 @@
       // and doesn't touch. grantFantasyBowForTesting() skips the acorn
       // cost; unlockFantasyBow() is the real cost-gated path.
       unlockFantasyBow: unlockFantasyBow,
+      openCosmeticShop: openCosmeticShop,
+      cosmetics: {
+        owned: function () { return Object.keys(store.cosmeticItems); },
+        equipped: function () { return store.cosmeticEquipped.slice(); },
+        buy: buyCosmetic,
+        equip: setCosmeticEquipped,
+        unequipCategory: function (catId) {
+          var c = COSMETIC_CATEGORIES.filter(function (x) { return x.id === catId; })[0];
+          return c ? unequipCosmeticCategory(c) : false;
+        },
+        priceOf: function (id) { var it = cosmeticItemById(id); return it ? cosmeticPriceOf(it) : null; }
+      },
       watchAdForCoins: watchAdForCoins,
       grantFantasyBowForTesting: grantFantasyBowForTesting,
       equipFantasyBow: equipFantasyBow,
