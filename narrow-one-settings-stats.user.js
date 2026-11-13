@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Settings & Stats
 // @namespace    narrowone-settings-stats
-// @version      2.14.1
-// @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), and shows live match stats while you hold Tab. No menu of its own.
+// @version      2.15.3
+// @description  Widens FOV, sensitivity, crosshair offset, UI scale and quality right inside the game's own Settings dialog, adds K/D and a running session to your profile stats (click your name to see them), shows live match stats while you hold Tab, and can show a reset timer over dropped flags. No menu of its own.
 // @author       Frogwagon
 // @match        https://narrow.one/*
 // @run-at       document-start
@@ -1138,7 +1138,7 @@
     }
 
     var hb = { scene: null, kit: null, mats: null, geo: null, shapes: new Map() };
-    var hitboxDebug = { drawn: 0, error: '', scene: '', players: 0 };
+    var hitboxDebug = { drawn: 0, error: '', scene: '', players: 0, fogRange: '' };
 
     /** Borrow three.js's classes from objects the game already made. */
     function hitboxKit(scene) {
@@ -1176,12 +1176,37 @@
       return geo;
     }
 
+    /*
+     * Fog range. Hitboxes would otherwise show players the fog is hiding, so they get
+     * the map's own fog: the game's shader fogs by 1 - exp(-distance * fogAmount), and
+     * the hitbox fades by exactly the same amount, vanishing where the fog hides 90%.
+     * It uses the map's real fog (from its map variables), so Anti-fog doesn't lift it.
+     */
+    var HB_FOG_CUTOFF = 0.1;         // gone once only 10% would show through the fog
+    function mapFogAmount() {
+      try {
+        var g = findGame();
+        var mv = g && g.mapLoader && g.mapLoader.mapVariablesManager;
+        if (!mv || typeof mv.get !== 'function') return 0;
+        var k = Number(mv.get('fogAmount')) || 0;
+        var h = Number(mv.get('fogHeightAmount')) || 0;
+        if (h > 0.00001) {
+          // height fog sits between its min and max amounts depending on height - use the middle
+          k = ((Number(mv.get('fogHeightAmountMin')) || 0) + (Number(mv.get('fogHeightAmountMax')) || 0)) / 2;
+        }
+        return k > 0 ? k : 0;
+      } catch (e) { return 0; }
+    }
+    function hitboxFogRange(k) { return k > 0 ? -Math.log(HB_FOG_CUTOFF) / k : Infinity; }
+
     function hitboxMaterial(kit) {
       var m = new kit.Material({
-        vertexShader: 'void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
-        fragmentShader: 'uniform float cr; uniform float cg; uniform float cb; uniform float ca;\n' +
-                        'void main(){ gl_FragColor = vec4(cr, cg, cb, ca); }',
-        uniforms: { cr: { value: 1 }, cg: { value: 0 }, cb: { value: 0 }, ca: { value: 0.35 } },
+        vertexShader: 'varying vec3 vW;\n' +
+                      'void main(){ vW = (modelMatrix * vec4(position, 1.0)).xyz; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+        fragmentShader: 'uniform float cr; uniform float cg; uniform float cb; uniform float ca; uniform float fogK; varying vec3 vW;\n' +
+                        'void main(){ float v = exp(-length(vW - cameraPosition) * fogK); if (v < ' + HB_FOG_CUTOFF.toFixed(2) + ') discard;\n' +
+                        '  gl_FragColor = vec4(cr, cg, cb, ca * v); }',
+        uniforms: { cr: { value: 1 }, cg: { value: 0 }, cb: { value: 0 }, ca: { value: 0.35 }, fogK: { value: 0 } },
         transparent: true, depthWrite: false, depthTest: true
       });
       return m;
@@ -1222,6 +1247,12 @@
       var alpha = fill ? hitboxOpacity() : 1;
       setMat(hb.mats.enemy, storedColor(HB_ENEMY_KEY, '#ff3b3b'), alpha, !fill);
       setMat(hb.mats.team, storedColor(HB_TEAM_KEY, '#3bff6a'), alpha, !fill);
+      var fogK = mapFogAmount(), fogRange = hitboxFogRange(fogK);
+      hb.mats.enemy.uniforms.fogK.value = fogK;
+      hb.mats.team.uniforms.fogK.value = fogK;
+      hitboxDebug.fogRange = isFinite(fogRange) ? Math.round(fogRange) + ' m' : 'no fog';
+      var cam = findCamera(), eye = null;
+      if (cam && cam.position) { eye = cam.position.clone(); if (typeof cam.getWorldPosition === 'function') cam.getWorldPosition(eye); }
 
       var me = findPlayer(), live = new Set(), drawn = 0;
       ag.players.forEach(function (pl) {
@@ -1241,6 +1272,13 @@
           }
           mesh.material = mat;
           var c = cols[i].center;
+          // Past the fog range: not drawn at all (the shader fades the rest).
+          if (eye) {
+            var ddx = c.x - eye.x, ddy = c.y - eye.y, ddz = c.z - eye.z;
+            mesh.visible = Math.sqrt(ddx * ddx + ddy * ddy + ddz * ddz) - cols[i].radius <= fogRange;
+          } else {
+            mesh.visible = !isFinite(fogRange);
+          }
           mesh.position.set(c.x, c.y, c.z);
           mesh.scale.set(cols[i].radius, cols[i].radius, cols[i].radius);
           // The game may switch off automatic matrix updates on its scene, which leaves a
@@ -1389,7 +1427,13 @@
     }
 
     var TAG_HEIGHT = 2.2;   // roughly a head above where a player's position sits
-    var SIGHT_POINTS = [1.7, 0.9];   // head and chest: seeing either one is seeing them
+    // Points over the body, as [height, sideways]: the tag is as big as the share of these you can see.
+    var SIGHT_POINTS = [
+      [1.75, 0], [1.45, 0], [1.1, 0], [0.7, 0], [0.25, 0],   // head down to feet
+      [1.35, -0.35], [1.35, 0.35], [0.9, -0.35], [0.9, 0.35] // shoulders and hips, left and right
+    ];
+    var SIGHT_CACHE_MS = 100;        // re-test each enemy ten times a second, not every frame
+    var sightCache = typeof WeakMap !== 'undefined' ? new WeakMap() : new Map();
 
     /** Which walls stop an arrow - the game's own filter, so they stop sight too. */
     function blocksSight(hit) {
@@ -1398,26 +1442,64 @@
         !(typeof c.isTriggerCollider === 'function' && c.isTriggerCollider());
     }
 
-    /** Clear line from your eye to the player? Fails closed if it can't tell. */
-    function canSee(ag, cam, pl) {
+    /**
+     * How much of the player you can see, 0..1: the share of body points with a clear
+     * line from your eye. Fails closed (0) if it can't tell.
+     */
+    function visibleShare(ag, cam, pl) {
       try {
         var physics = ag.physics;
         if (!physics || typeof physics.getRayCastCache !== 'function' ||
-            typeof physics.rayCastMapColliders !== 'function') return false;
-        if (!pl.pos || typeof pl.pos.clone !== 'function' || !cam.position) return false;
+            typeof physics.rayCastMapColliders !== 'function') return 0;
+        if (!pl.pos || typeof pl.pos.clone !== 'function' || !cam.position) return 0;
 
         var eye = cam.position.clone();
         if (typeof cam.getWorldPosition === 'function') cam.getWorldPosition(eye);
+        // "sideways" is across your view of them, so left/right points are their left and right edges on screen
+        var dx = pl.pos.x - eye.x, dz = pl.pos.z - eye.z, len = Math.sqrt(dx * dx + dz * dz) || 1;
+        var sx = -dz / len, sz = dx / len;
 
+        var clear = 0;
         for (var i = 0; i < SIGHT_POINTS.length; i++) {
           var target = pl.pos.clone();
-          target.y += SIGHT_POINTS[i];
+          target.y += SIGHT_POINTS[i][0];
+          target.x += sx * SIGHT_POINTS[i][1];
+          target.z += sz * SIGHT_POINTS[i][1];
           var ray = physics.getRayCastCache(eye, target);
-          if (!ray) return true;   // eye and target coincide - nothing between
-          if (!physics.rayCastMapColliders(ray, blocksSight)) return true;
+          if (!ray || !physics.rayCastMapColliders(ray, blocksSight)) clear++;
         }
-        return false;
-      } catch (e) { return false; }
+        return clear / SIGHT_POINTS.length;
+      } catch (e) { return 0; }
+    }
+    function visibleShareCached(ag, cam, pl) {
+      var now = Date.now(), c = sightCache.get(pl);
+      if (c && now - c.at < SIGHT_CACHE_MS) return c.v;
+      var v = visibleShare(ag, cam, pl);
+      sightCache.set(pl, { at: now, v: v });
+      return v;
+    }
+
+    // An enemy tag also grows in the longer they stay in view, and shrinks with distance,
+    // so someone who flashes past only ever gets a very small tag.
+    var TAG_GROW_MS = 1500;          // time in view to reach full size
+    var TAG_START = 0.15;            // size the moment they come into view
+    var TAG_NEAR = 10, TAG_FAR = 70; // full size up to 10 m, smallest from 70 m
+    var TAG_FAR_SCALE = 0.3;
+    var inViewSince = typeof WeakMap !== 'undefined' ? new WeakMap() : new Map();
+    function timeFactor(pl, now) {
+      var since = inViewSince.get(pl);
+      if (since === undefined) { since = now; inViewSince.set(pl, now); }
+      var t = Math.min(1, (now - since) / TAG_GROW_MS);
+      return TAG_START + (1 - TAG_START) * t;
+    }
+    function distanceFactor(cam, pl) {
+      if (!cam.position || !pl.pos) return 1;
+      var eye = cam.position.clone();
+      if (typeof cam.getWorldPosition === 'function') cam.getWorldPosition(eye);
+      var dx = pl.pos.x - eye.x, dy = pl.pos.y - eye.y, dz = pl.pos.z - eye.z;
+      var d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      var t = Math.max(0, Math.min(1, (d - TAG_NEAR) / (TAG_FAR - TAG_NEAR)));
+      return 1 - (1 - TAG_FAR_SCALE) * t;
     }
 
     (function tagLoop() {
@@ -1434,12 +1516,15 @@
         var mate = pl.teamId === me.teamId;
         var pt = toScreen(pl.pos, cam, TAG_HEIGHT);
         if (!pt) return;
-        if (!mate && !canSee(ag, cam, pl)) return;   // enemies only while actually visible
+        // Enemies: only while actually visible, and the tag is only as big as the share of them you see.
+        var share = mate ? 1 : visibleShareCached(ag, cam, pl);
+        if (share <= 0) return;
+        var size = mate ? 1 : share * timeFactor(pl, Date.now()) * distanceFactor(cam, pl);
         seen.add(pl);
         var el = tagEls.get(pl);
         if (!el) {
           el = document.createElement('div');
-          el.style.cssText = 'position:absolute; transform:translate(-50%,-100%); white-space:nowrap; ' +
+          el.style.cssText = 'position:absolute; transform:translate(-50%,-100%); transform-origin:50% 100%; white-space:nowrap; ' +
             'font:700 13px system-ui,sans-serif; color:#fff; padding:1px 6px; border-radius:6px; ' +
             'background:' + (mate ? 'rgba(0,0,0,.35)' : 'rgba(150,20,20,.5)') + '; ' +
             'text-shadow:0 0 3px #000, 0 0 3px #000;';
@@ -1450,9 +1535,139 @@
         el.style.display = 'block';
         el.style.left = pt.x + 'px';
         el.style.top = pt.y + 'px';
+        var tf = 'translate(-50%,-100%) scale(' + size.toFixed(2) + ')';
+        if (el.style.transform !== tf) el.style.transform = tf;
       });
       tagEls.forEach(function (el, pl) {
-        if (!seen.has(pl)) el.style.display = 'none';
+        if (!seen.has(pl)) { el.style.display = 'none'; inViewSince.delete(pl); }   // out of view: starts small again
+      });
+    })();
+
+    /* ================================================================ *
+     * Flag reset timer - a setting in the native Settings dialog
+     *
+     * A label over every dropped flag, drawn like the name tags. The game
+     * already shows each flag's icon through walls, so this shows nothing
+     * new about where it is - only how long until it goes home.
+     *
+     * The client is never told the reset time. The server just sends
+     * "flag returned" with no player attached when its own timer runs out
+     * (playerChangeFlag(id, flag, 3) for a player that isn't in the game).
+     * So the mod times the first one it sees - drop to server return - and
+     * from then on shows a real countdown. Until it has learned the time it
+     * shows how long the flag has been down instead. When you stand on your
+     * own dropped flag it shows the game's own return progress.
+     * ================================================================ */
+
+    var FLAGTIMER_KEY = 'narrowone.settingsstats.flagtimer';
+    var FLAGRESET_KEY = 'narrowone.settingsstats.flagResetSeconds';
+    function learnedResetMs() {
+      try {
+        var list = JSON.parse(localStorage.getItem(FLAGRESET_KEY) || '[]');
+        if (!Array.isArray(list) || !list.length) return 0;
+        var s = list.slice().sort(function (a, b) { return a - b; });
+        return s[Math.floor(s.length / 2)] * 1000;          // median of the last few
+      } catch (e) { return 0; }
+    }
+    function learnReset(ms) {
+      if (!(ms > 3000 && ms < 300000)) return;               // ignore odd ones
+      try {
+        var list = JSON.parse(localStorage.getItem(FLAGRESET_KEY) || '[]');
+        if (!Array.isArray(list)) list = [];
+        list.push(Math.round(ms / 1000));
+        localStorage.setItem(FLAGRESET_KEY, JSON.stringify(list.slice(-5)));
+      } catch (e) {}
+    }
+
+    var FlagMap = typeof WeakMap !== 'undefined' ? WeakMap : Map;
+    var flagDropAt = new FlagMap();          // flag -> when we saw it land (Date.now())
+    var flagDropSeen = new FlagMap();        // flag -> true if we saw the drop itself happen
+    var flagWasDown = new FlagMap();         // flag -> its state last frame (missing = never seen)
+    var hookedFlagGames = typeof WeakSet !== 'undefined' ? new WeakSet() : null;
+
+    function flagList(ag) {
+      var f = ag && ag.flags;
+      if (!f) return [];
+      return Array.isArray(f) ? f : Object.keys(f).map(function (k) { return f[k]; });
+    }
+    function flagIsDown(fl) { return !!fl && !fl.isOnDefaultPos && !fl.currentHoldingPlayer; }
+
+    /** Times the server's own return: type 3 for a player id that isn't in the game. */
+    function hookFlagReturns(ag) {
+      if (!ag || !hookedFlagGames || hookedFlagGames.has(ag) || typeof ag.playerChangeFlag !== 'function') return;
+      hookedFlagGames.add(ag);
+      var orig = ag.playerChangeFlag;
+      ag.playerChangeFlag = function (playerId, flagIndex, type) {
+        try {
+          var fl = this.flags && this.flags[flagIndex];
+          var noPlayer = !(this.players && this.players.get && this.players.get(playerId));
+          if (type === 3 && noPlayer && fl && flagIsDown(fl) && flagDropSeen.get(fl)) {
+            learnReset(Date.now() - flagDropAt.get(fl));
+          }
+        } catch (e) {}
+        return orig.apply(this, arguments);
+      };
+    }
+
+    var flagTimerEls = new Map();
+    function hideFlagTimers() { flagTimerEls.forEach(function (el) { el.style.display = 'none'; }); }
+
+    (function flagTimerLoop() {
+      requestAnimationFrame(flagTimerLoop);
+      var ag = currentGame();
+      if (ag) hookFlagReturns(ag);
+      var flags = flagList(ag);
+      var now = Date.now();
+      // Track drops even while the label is off, so the timer is right the moment you turn it on.
+      flags.forEach(function (fl) {
+        if (flagIsDown(fl)) {
+          // Only a drop we watched happen (flag seen in place first) gives a true start time.
+          if (!flagDropAt.has(fl)) { flagDropAt.set(fl, now); flagDropSeen.set(fl, flagWasDown.get(fl) === false); }
+        } else {
+          flagDropAt.delete(fl); flagDropSeen.delete(fl);
+        }
+        flagWasDown.set(fl, flagIsDown(fl));
+      });
+
+      if (!flagOn(FLAGTIMER_KEY)) { hideFlagTimers(); return; }
+      var me = findPlayer(), cam = findCamera();
+      if (!ag || !cam) { hideFlagTimers(); return; }
+      var layer = tagLayer();
+      var resetMs = learnedResetMs();
+      var shown = new Set();
+      flags.forEach(function (fl) {
+        if (!flagIsDown(fl) || !fl.position) return;
+        var pt = toScreen(fl.position, cam, 3.4);       // just above the game's own flag icon
+        if (!pt) return;
+        var mine = !!me && fl.teamId === me.teamId;
+        var since = now - (flagDropAt.get(fl) || now);
+        var text;
+        if (mine && fl.returnProgress > 0.001) {
+          text = 'Returning ' + Math.min(99, Math.floor(fl.returnProgress * 100)) + '%';
+        } else if (resetMs && flagDropSeen.get(fl)) {
+          text = '⟳ ' + Math.max(0, Math.ceil((resetMs - since) / 1000)) + 's';
+        } else {
+          text = 'Down ' + Math.floor(since / 1000) + 's';
+        }
+        var el = flagTimerEls.get(fl);
+        if (!el) {
+          el = document.createElement('div');
+          el.style.cssText = 'position:absolute; transform:translate(-50%,-100%); white-space:nowrap; ' +
+            'font:800 14px system-ui,sans-serif; color:#fff; padding:2px 8px; border-radius:7px; ' +
+            'text-shadow:0 0 3px #000, 0 0 3px #000;';
+          layer.appendChild(el);
+          flagTimerEls.set(fl, el);
+        }
+        el.style.background = mine ? 'rgba(0,0,0,.45)' : 'rgba(150,20,20,.55)';
+        if (el.textContent !== text) el.textContent = text;
+        el.style.display = 'block';
+        el.style.left = pt.x + 'px';
+        el.style.top = pt.y + 'px';
+        shown.add(fl);
+      });
+      flagTimerEls.forEach(function (el, fl) {
+        if (!shown.has(fl)) el.style.display = 'none';
+        if (flags.indexOf(fl) === -1) { el.remove(); flagTimerEls.delete(fl); }
       });
     })();
 
@@ -1564,6 +1779,7 @@
           setTimeout(function () {
             widenSettingsDialog(node);
             addNameTagOption(node);
+            addToggleRow(node, 'nss-flagtimer', 'Flag reset timer', FLAGTIMER_KEY);
             addFeedAndChargeOptions(node);
             addTrailOptions(node);
             addHitboxOptions(node);
